@@ -180,6 +180,17 @@ if [ -f "$SRC/libexec/webdesk-update" ]; then
   install -D -m 0755 "$SRC/libexec/webdesk-update" "$LIBEXEC/webdesk-update"
   ln -sf "$LIBEXEC/webdesk-update" "$PREFIX/webdesk-update"
   echo "    $LIBEXEC/webdesk-update (also on PATH as webdesk-update)"
+  # And again where sudo will actually look. The updater has to be run as root,
+  # but sudo resets PATH to its own secure_path, and the RHEL family ships
+  # /sbin:/bin:/usr/sbin:/usr/bin -- which does not include /usr/local/bin. So
+  # the documented `sudo webdesk-update` was "command not found" on Alma, Rocky
+  # and Fedora even though the symlink above is on the invoking user's PATH.
+  # /usr/sbin is in the default secure_path of every distro this targets, and a
+  # root-only tool is what that directory is for.
+  if [ -d /usr/sbin ] && [ "$PREFIX" != /usr/sbin ]; then
+    ln -sf "$LIBEXEC/webdesk-update" /usr/sbin/webdesk-update
+    echo "    /usr/sbin/webdesk-update (so sudo's secure_path finds it)"
+  fi
 else
   echo "    !! libexec/webdesk-update missing from this tree; in-browser"
   echo "       updates will report themselves unavailable"

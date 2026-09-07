@@ -180,9 +180,40 @@ jobs:
           cat manifest.json
 
       - name: attest build provenance
+        id: attest
         uses: actions/attest-build-provenance@v4
         with:
           subject-path: 'dist/webdesk-*'
+
+      - name: publish the signing bundles alongside the binaries
+        # Verifying an attestation the ordinary way -- `gh attestation verify
+        # --repo` -- fetches it from the GitHub API, which needs a token. A
+        # server being installed on does not have one, and gh then exits 4
+        # without ever looking at the binary, so the host could not check
+        # provenance at all. Shipping the bundles as a release asset makes the
+        # check offline and credential-free: see check_provenance in
+        # bootstrap.sh.
+        #
+        # One file for all four binaries. The action writes JSON Lines when it
+        # is given several subjects, and verify picks the line matching the
+        # artifact's digest.
+        run: |
+          set -eux
+          cp "${{ steps.attest.outputs.bundle-path }}" dist/attestations.jsonl
+          wc -l dist/attestations.jsonl
+
+      - name: check the bundles verify without credentials
+        # Deliberately no GH_TOKEN in this step's environment: that is the
+        # state every host is in, and this runs the same command they will.
+        # A change in how the action names or formats its output would
+        # otherwise show up as thousands of hosts quietly compiling again.
+        run: |
+          set -eux
+          for f in dist/webdesk-*; do
+            gh attestation verify "$f" \
+              --bundle dist/attestations.jsonl \
+              --repo "$GITHUB_REPOSITORY"
+          done
 
       - name: publish
         env:
@@ -204,7 +235,7 @@ jobs:
           # point of the whole release: by the time a host can see a new
           # manifest, the binaries beside it are already the new ones.
           publish_assets() {
-            gh release upload "$1" dist/webdesk-* dist/SHA256SUMS --clobber
+            gh release upload "$1" dist/webdesk-* dist/SHA256SUMS dist/attestations.jsonl --clobber
             gh release upload "$1" dist/manifest.json --clobber
             # Editing a release in place is what keeps latest-main's download
             # URLs alive, but it means --clobber only replaces names that are

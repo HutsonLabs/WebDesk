@@ -140,6 +140,92 @@ host_family() {
   fi
 }
 
+# Verify $1, a downloaded asset, against the build provenance published with
+# the release at $2. Three outcomes, because "this did not verify" and "nothing
+# here was able to verify it" must never collapse into the same answer:
+#
+#   0  checked, and this is the binary CI published
+#   1  checked, and it is not -- always fatal
+#   2  no opinion: nothing on this host could perform the check
+#
+# The reason is left in PROV_WHY, and whatever gh printed in $TMP/gh-verify.log
+# for the caller to show. gh saying nothing about why it refused is how a host
+# ends up compiling for weeks without anyone knowing there was a check to fix.
+PROV_WHY=
+check_provenance() {
+  pfile=$1
+  pbase=$2
+  PROV_WHY=
+  : > "$TMP/gh-verify.log"
+
+  if ! command -v gh >/dev/null 2>&1; then
+    PROV_WHY="gh is not installed"
+    return 2
+  fi
+
+  # gh only grew `attestation` in 2.49, and an older one exits non-zero with
+  # `unknown command "attestation"` -- the same way it exits when a binary is
+  # genuinely unattested. A gh that cannot check is not accusing the binary of
+  # anything; it is declining to have an opinion.
+  if ! gh attestation --help >/dev/null 2>&1; then
+    ghver=$(gh --version 2>/dev/null | sed -n '1s/^gh version \([^ ]*\).*/\1/p')
+    PROV_WHY="gh ${ghver:-here} is too old to verify attestations (needs 2.49+)"
+    return 2
+  fi
+
+  # Offline first. `gh attestation verify` normally fetches the attestation
+  # from the GitHub API, which needs a token -- and a gh without one exits 4
+  # before it has looked at the binary at all. That is the ordinary state of a
+  # server: nothing about installing WebDesk asks anyone to log into GitHub.
+  # So every release also publishes the signing bundles as attestations.jsonl
+  # beside the binaries, and verifying against that file makes no API call and
+  # needs no credentials at all.
+  #
+  # It is fetched from $pbase, which by now is the numbered release rather than
+  # the rolling pointer, so it is the bundle for these exact bytes and no cache
+  # in front of latest-main can substitute a previous build's.
+  if curl -fsSL --max-time 60 "$pbase/attestations.jsonl" \
+       -o "$TMP/attestations.jsonl" 2>/dev/null \
+     && [ -s "$TMP/attestations.jsonl" ] \
+     && ! grep -qv '^{.*}$' "$TMP/attestations.jsonl"; then
+    # That last test is not fussiness about formatting. A truncated download
+    # would otherwise reach gh and come back as a signature that does not
+    # verify -- and that is the one answer which has to mean something is
+    # wrong with the binary.
+    rc=0
+    gh attestation verify "$pfile" --bundle "$TMP/attestations.jsonl" \
+      --repo "$REPO" >"$TMP/gh-verify.log" 2>&1 || rc=$?
+    if [ "$rc" -eq 0 ]; then
+      PROV_WHY="offline, against the bundle published with the release"
+      return 0
+    fi
+    # Nothing in this path talks to the API, so there is no missing credential
+    # to blame: this is the check saying no.
+    PROV_WHY="the bundle published with the release does not cover this binary"
+    return 1
+  fi
+
+  # No bundle beside the binary -- a release cut before they were published.
+  # Fall back to asking the API, which is the path that needs a token.
+  rc=0
+  gh attestation verify "$pfile" --repo "$REPO" >"$TMP/gh-verify.log" 2>&1 || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    PROV_WHY="against the GitHub API"
+    return 0
+  fi
+  # 4 is gh's documented code for "authentication required" -- see `gh help
+  # exit-codes`. gh never fetched an attestation, so it is not accusing this
+  # binary of anything either. Reading that as a failed verification is what
+  # used to make an unauthenticated host compile from source on every update,
+  # for ever, while the log said only that verification had FAILED.
+  if [ "$rc" -eq 4 ]; then
+    PROV_WHY="gh has no credentials to fetch the attestation with, and this release published no offline bundle"
+    return 2
+  fi
+  PROV_WHY="gh attestation verify exited $rc"
+  return 1
+}
+
 # Sets PREBUILT_OK=yes and leaves the verified binary at $2 on success.
 try_prebuilt() {
   commit=$1
@@ -238,32 +324,24 @@ try_prebuilt() {
   fi
   say "    checksum ok"
 
-  # Provenance. gh is not a dependency of this project, so its absence only
-  # means the check is skipped -- unless the operator asked for it to be
-  # mandatory. A gh that is present and says no is always fatal.
-  #
-  # "Present" has to mean "able to check". gh only grew `attestation` in 2.49,
-  # and an older one exits non-zero with `unknown command "attestation"` -- the
-  # same way it exits when a binary is genuinely unattested. Reading that as a
-  # failed verification condemns every host with an older gh to compiling for
-  # ever, which is exactly backwards: a gh that cannot check is not accusing
-  # the binary of anything, it is declining to have an opinion. Distinguish the
-  # two, and let the operator make either one fatal.
-  if ! command -v gh >/dev/null 2>&1; then
+  # Provenance. gh is not a dependency of this project, so a host that cannot
+  # perform the check installs on the checksum alone -- unless the operator
+  # asked for the check to be mandatory. A check that runs and says no is
+  # always fatal; one that could not run is not, and the difference is the
+  # whole reason check_provenance reports three outcomes rather than two.
+  prc=0
+  check_provenance "$TMP/$asset" "$base" || prc=$?
+  if [ "$prc" -eq 0 ]; then
+    say "    provenance verified: $PROV_WHY"
+  elif [ "$prc" -eq 2 ]; then
     if [ "${WD_REQUIRE_ATTESTATION:-0}" = 1 ]; then
-      die "WD_REQUIRE_ATTESTATION=1 but gh is not installed to check it"
+      if [ -s "$TMP/gh-verify.log" ]; then sed 's/^/       /' "$TMP/gh-verify.log"; fi
+      die "WD_REQUIRE_ATTESTATION=1 but provenance could not be checked: $PROV_WHY"
     fi
-    say "    gh not installed; provenance not checked (see README)"
-  elif ! gh attestation --help >/dev/null 2>&1; then
-    ghver=$(gh --version 2>/dev/null | sed -n '1s/^gh version \([^ ]*\).*/\1/p')
-    if [ "${WD_REQUIRE_ATTESTATION:-0}" = 1 ]; then
-      die "WD_REQUIRE_ATTESTATION=1 but gh ${ghver:-(unknown version)} cannot verify attestations; needs 2.49 or newer"
-    fi
-    say "    gh ${ghver:-here} is too old to verify provenance (needs 2.49+); not checked"
-  elif gh attestation verify "$TMP/$asset" --repo "$REPO" >/dev/null 2>&1; then
-    say "    provenance verified against $REPO"
+    say "    provenance not checked: $PROV_WHY (see README)"
   else
-    say "!! provenance verification FAILED for $asset"
+    say "!! provenance verification FAILED for $asset: $PROV_WHY"
+    if [ -s "$TMP/gh-verify.log" ]; then sed 's/^/       /' "$TMP/gh-verify.log"; fi
     [ "${WD_REQUIRE_ATTESTATION:-0}" = 1 ] && die "refusing to install an unverified binary"
     say "    refusing the prebuilt binary; will compile instead"
     return 0

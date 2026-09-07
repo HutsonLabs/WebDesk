@@ -150,8 +150,10 @@ Every push to `main` is built by GitHub Actions for four targets — `x86_64` an
 numbered, immutable release of its own, and to a rolling `latest-main`
 prerelease that carries the same assets. Both get `SHA256SUMS`, a
 `manifest.json` naming the commit and the version, and a signed build-provenance
-attestation. Hosts tracking a branch install from `latest-main`; the numbered
-release is the permanent record of what that version was.
+attestation — published both to GitHub's attestation API and as an
+`attestations.jsonl` asset, so that a host can verify it without a token. Hosts
+tracking a branch install from `latest-main`; the numbered release is the
+permanent record of what that version was.
 
 ### Version numbers
 
@@ -197,17 +199,24 @@ Before installing one, `bootstrap.sh`:
 2. verifies `SHA256SUMS`, using `sha256sum` or `openssl`, and declines if
    neither is available rather than installing something it could not check;
 3. verifies the provenance attestation with `gh attestation verify` when `gh`
-   is installed **and new enough to have that command** (2.49+). A `gh` that
-   checks and says no is always fatal; one too old to check is not, because it
-   is declining to have an opinion rather than accusing the binary, and is
-   treated as if `gh` were absent.
+   is installed **and new enough to have that command** (2.49+). It verifies
+   against the `attestations.jsonl` published with the release, which makes no
+   API call and needs no GitHub credentials; only a release cut before those
+   bundles existed falls back to fetching the attestation from the API, which
+   does need a token.
+
+   A check that runs and says no is always fatal. A check that could not run is
+   not, because it is declining to have an opinion rather than accusing the
+   binary — that covers `gh` being absent, `gh` being too old, and `gh` having
+   no credentials for the API fallback (its exit code 4). Whatever `gh` printed
+   goes into the log either way, so a host that is not checking says why.
 
 Any of these failing costs a compile, not an install. The knobs:
 
 | | |
 | --- | --- |
 | `WD_PREBUILT=off` | never use a release binary; always compile on the host |
-| `WD_REQUIRE_ATTESTATION=1` | refuse to install unless provenance is verified — implies `gh` 2.49+ must be present |
+| `WD_REQUIRE_ATTESTATION=1` | refuse to install unless provenance is verified — implies `gh` 2.49+ must be present, and turns "could not check" into a hard failure |
 | `WD_RELEASE_TAG=tag` | take the binary from a specific release |
 
 Be clear about what the checksum does and does not buy you: it comes from the
@@ -219,11 +228,21 @@ is only checked if `gh` is on the host. Verify one by hand with:
 gh attestation verify webdesk-x86_64-rhel --repo HutsonLabs/WebDesk
 ```
 
+That form fetches the attestation from GitHub and needs `gh` to be logged in.
+The offline form, which is what a host actually runs, needs nothing but the two
+files:
+
+```sh
+curl -fLO https://github.com/HutsonLabs/WebDesk/releases/download/latest-main/attestations.jsonl
+gh attestation verify webdesk-x86_64-rhel --bundle attestations.jsonl --repo HutsonLabs/WebDesk
+```
+
 ## What gets installed
 
 ```
 /usr/local/bin/webdesk              the binary
 /usr/local/bin/webdesk-update       symlink to the updater
+/usr/sbin/webdesk-update            symlink again, on sudo's secure_path
 /usr/local/libexec/webdesk-update   the updater
 /usr/local/src/webdesk/             source, kept for incremental rebuilds
 /etc/webdesk/install.conf           settings, so updates preserve them
@@ -1228,7 +1247,9 @@ These additionally require the session to be in an admin group, and return
   without a `gh` that can check installs on a checksum alone, which is not a
   provenance control. Debian and Ubuntu LTS archives still carry older `gh`
   builds, so this is the common case rather than the exotic one. Set
-  `WD_REQUIRE_ATTESTATION=1` to make it mandatory.
+  `WD_REQUIRE_ATTESTATION=1` to make it mandatory. It no longer requires that
+  `gh` be *logged in*: the check runs offline against the bundle published with
+  the release.
 - **No static musl build.** PAM `dlopen`s its modules, so the binary cannot be
   statically linked; that is why artifacts are per libc family rather than one
   universal build.
