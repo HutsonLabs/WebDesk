@@ -194,9 +194,12 @@ jobs:
         # check offline and credential-free: see check_provenance in
         # bootstrap.sh.
         #
-        # One file for all four binaries. The action writes JSON Lines when it
-        # is given several subjects, and verify picks the line matching the
-        # artifact's digest.
+        # One file for all four binaries: given several subjects, the action
+        # signs a single attestation whose statement lists them all, and verify
+        # matches the artifact's digest against that list. The line count is
+        # printed because check_provenance requires whole lines of JSON before
+        # it will trust the file -- one line today, JSON Lines if this ever
+        # becomes several bundles, and it accepts either.
         run: |
           set -eux
           cp "${{ steps.attest.outputs.bundle-path }}" dist/attestations.jsonl

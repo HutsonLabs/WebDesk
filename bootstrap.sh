@@ -177,7 +177,7 @@ check_provenance() {
   # from the GitHub API, which needs a token -- and a gh without one exits 4
   # before it has looked at the binary at all. That is the ordinary state of a
   # server: nothing about installing WebDesk asks anyone to log into GitHub.
-  # So every release also publishes the signing bundles as attestations.jsonl
+  # So every release also publishes the signing bundle as attestations.jsonl
   # beside the binaries, and verifying against that file makes no API call and
   # needs no credentials at all.
   #
