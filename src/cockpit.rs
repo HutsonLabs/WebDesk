@@ -278,7 +278,7 @@ pub struct Bridge {
 }
 
 fn find_bridge() -> Option<PathBuf> {
-    if let Some(p) = crate::engine::which(BRIDGE_PREREQ.bin) {
+    if let Some(p) = crate::which::which(BRIDGE_PREREQ.bin) {
         return Some(p);
     }
     BRIDGE_PATHS.iter().map(PathBuf::from).find(|p| p.exists())

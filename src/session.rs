@@ -43,23 +43,18 @@ const INSIDE: &str = "--inside-cage";
 /// past it is `cage`, `wayvnc` and `flatpak`, and none of the three is on a
 /// machine this is developed on.
 ///
-/// Both refusals matter and they are different mistakes. An unknown slug is a
-/// unit file naming something this build has never heard of -- a stale template
-/// instance left behind by a downgrade, or a hand-typed `systemctl --user
-/// start`. A known slug that is a container is a wiring error: somebody pointed
-/// the streamed path at an entry `apps.rs` serves through the proxy, and
-/// starting a compositor for it would produce an empty window rather than an
-/// error anyone could read.
+/// There is one refusal left, and it is the one that mattered: an unknown slug
+/// is a unit file naming something this build has never heard of -- a stale
+/// template instance left behind by a downgrade, or a hand-typed `systemctl
+/// --user start`. There used to be two more, for a slug that named a container
+/// or an adopted host service, because pointing the streamed path at one of
+/// those would have started a compositor for an application that was never going
+/// to appear in it. Those kinds of entry no longer exist, so the catalog itself
+/// now answers the whole question.
 pub fn resolve(slug: &str) -> Result<(&'static App, &'static Streamed), String> {
-    let Some(app) = crate::catalog::find(slug) else {
-        return Err(format!("{slug} is not an application in this build"));
-    };
-    match app.streamed.as_ref() {
-        Some(streamed) => Ok((app, streamed)),
-        None if app.host.is_some() => {
-            Err(format!("{slug} is a service adopted on this host, not one it draws"))
-        }
-        None => Err(format!("{slug} is a container app, not one this host draws")),
+    match crate::catalog::find(slug) {
+        Some(app) => Ok((app, &app.streamed)),
+        None => Err(format!("{slug} is not an application in this build")),
     }
 }
 
@@ -314,7 +309,7 @@ impl Compositor {
 /// The compositor to run, or `None` on a host with neither.
 pub fn compositor() -> Option<Compositor> {
     for c in [Compositor::Sway, Compositor::Cage] {
-        if crate::engine::which(c.bin()).is_some() {
+        if crate::which::which(c.bin()).is_some() {
             return Some(c);
         }
     }
@@ -641,40 +636,17 @@ mod tests {
         assert!(resolve("../../etc/passwd").is_err());
     }
 
-    /// A real catalog slug that is not a streamed entry is refused too, and it
-    /// has to be: a compositor started for a container app would come up, find
-    /// nothing to draw and exit, leaving a tile that says `failed` for a reason
-    /// nobody could work out from the journal.
-    #[test]
-    fn a_catalog_entry_that_is_not_streamed_is_refused() {
-        let mut checked = 0;
-        for app in crate::catalog::CATALOG.iter().filter(|a| a.streamed.is_none()) {
-            let Err(err) = resolve(app.slug) else {
-                panic!("{} is not streamed and must not resolve", app.slug);
-            };
-            // The message says which kind it is, because the answer to "why did
-            // my app not open" is different for the two.
-            assert!(err.contains(app.slug), "{err} does not say what was asked for");
-            checked += 1;
-        }
-        assert!(checked > 0, "the catalog has no container entries left to check against");
-    }
-
-    /// Every streamed entry resolves, and resolves to an application id there is
+    /// Every entry resolves, and resolves to an application id there is
     /// something to run. An entry added with an empty id would install, start a
     /// compositor, and fail inside `flatpak run` where nothing is watching.
     #[test]
-    fn every_streamed_entry_resolves_to_something_runnable() {
-        for app in crate::catalog::CATALOG.iter().filter(|a| a.streamed.is_some()) {
+    fn every_entry_resolves_to_something_runnable() {
+        for app in crate::catalog::CATALOG {
             let Ok((found, streamed)) = resolve(app.slug) else {
-                panic!("{} is a streamed entry and must resolve", app.slug);
+                panic!("{} is a catalog entry and must resolve", app.slug);
             };
             assert_eq!(found.slug, app.slug);
             assert!(!streamed.flatpak.id.is_empty(), "{} names no application", app.slug);
-            // Nothing else to run it: no image to pull and no port to publish.
-            // A streamed entry that also had those would be two entries.
-            assert!(app.image.is_empty(), "{} is a container as well", app.slug);
-            assert_eq!(app.port, 0, "{} publishes a port nothing would serve", app.slug);
         }
     }
 

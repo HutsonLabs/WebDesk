@@ -108,8 +108,8 @@ def build_index():
 CATALOG_STATIC = re.compile(r"pub static CATALOG[^=]*=\s*&\[(.*?)\n\];", re.DOTALL)
 # The two shapes an entry is written in: the `desktop!` macro, whose arguments
 # are positional, and a plain `App { .. }` literal.
-ENTRY_START = re.compile(r"desktop!\s*\(|App\s*\{")
-FIELD = re.compile(r'^\s*(slug|name|tagline|image|icon|notes)\s*:\s*"', re.MULTILINE)
+ENTRY_START = re.compile(r"flathub!\s*\(|App\s*\{")
+FIELD = re.compile(r'^\s*(slug|name|tagline|icon|notes)\s*:\s*"', re.MULTILINE)
 
 
 def rust_string(text, quote):
@@ -146,12 +146,10 @@ def catalog_index():
     is a bug in nothing but the preview that looks exactly like a bug in the
     UI. Reading the real entries here is what lets the shim correct itself.
 
-    Deliberately shallow -- five strings an entry, and no params. Params are
-    where the Rust turns structural (`Kind::HostPath { at, ro }`, `Choice`),
-    and a parser that went after them would be the kind that breaks quietly on
-    the first entry written in a shape it did not expect. Anything unparseable
-    answers with nothing at all and the shim falls back to its own data, which
-    is the same bargain as before this function existed.
+    Deliberately shallow -- five strings an entry, and not the window size that
+    follows them. Anything unparseable answers with nothing at all and the shim
+    falls back to its own data, which is the same bargain as before this
+    function existed.
     """
     try:
         text = CATALOG_RS.read_text(encoding="utf-8")
@@ -164,7 +162,7 @@ def catalog_index():
 
     # The macro writes the same notes into every entry that uses it.
     macro_notes = ""
-    macro = re.search(r"macro_rules!\s+desktop\s*\{(.*?)\n\}", text, re.DOTALL)
+    macro = re.search(r"macro_rules!\s+flathub\s*\{(.*?)\n\}", text, re.DOTALL)
     if macro:
         at = re.search(r'\n\s*notes:\s*"', macro.group(1))
         if at:
@@ -175,8 +173,10 @@ def catalog_index():
     apps = {}
     for n, start in enumerate(starts):
         chunk = body[start:starts[n + 1] if n + 1 < len(starts) else len(body)]
-        if chunk.startswith("desktop!"):
-            # slug, name, image, icon, tagline -- positional, in that order.
+        if chunk.startswith("flathub!"):
+            # slug, name, flatpak id, icon, tagline -- positional, in that
+            # order. The window size that follows is two integers rather than a
+            # string, so the "first five strings" rule stops cleanly before it.
             args, at = [], chunk.index("(")
             while len(args) < 5:
                 quote = chunk.find('"', at)
@@ -187,7 +187,7 @@ def catalog_index():
             if len(args) < 5:
                 continue
             entry = {
-                "slug": args[0], "name": args[1], "image": args[2],
+                "slug": args[0], "name": args[1], "flatpak": args[2],
                 "icon": args[3], "tagline": args[4], "notes": macro_notes,
             }
         else:
@@ -230,30 +230,6 @@ def fingerprint():
 # ------------------------------------------------------------------ server
 
 
-def app_stub(slug):
-    """Stand in for a proxied container app, which needs a real host to exist.
-
-    Deliberately plain: it is here to prove the frame is wired up and sized,
-    not to imitate any particular application.
-    """
-    name = slug.replace("-", " ").title()
-    return f"""<!doctype html><meta charset=utf-8><title>{name}</title>
-<style>
- html{{color-scheme:dark}}
- body{{margin:0;height:100vh;display:grid;place-content:center;gap:.5rem;
-   text-align:center;background:#11161d;color:#e6eaf0;
-   font:15px/1.6 system-ui,sans-serif}}
- h1{{margin:0;font-size:1.1rem;font-weight:600}}
- p{{margin:0;color:#93a1b1;font-size:.85rem}}
- code{{background:#0d1117;border:1px solid #242c38;border-radius:4px;padding:1px 5px;
-   font-size:.8rem}}
-</style>
-<h1>{name}</h1>
-<p>Preview stand-in for the app served at <code>/app/{slug}/</code>.</p>
-<p>On a real host this frame is the container's own web interface.</p>
-"""
-
-
 class Handler(http.server.SimpleHTTPRequestHandler):
     # Quiet: a hot-reload poll every 500ms would otherwise bury real requests.
     def log_message(self, fmt, *args):
@@ -292,13 +268,6 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
         if path in ("/", "/index.html"):
             return self.serve_index()
-
-        # A container app's window is an iframe pointed at the proxy, which
-        # only exists on a real host. Serve a stand-in so the window, its title
-        # bar and its two extra buttons can be looked at.
-        if path.startswith("/app/"):
-            slug = path[len("/app/"):].strip("/").split("/")[0]
-            return self.send_payload(app_stub(slug), "text/html; charset=utf-8")
 
         # Anything the browser asks for that is not a real ui/ file is an API
         # call the shim should have caught. Say so loudly rather than 404ing --

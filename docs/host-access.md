@@ -1,7 +1,25 @@
 # Giving a container app the host
 
-*What it takes to make a containerised application behave as though it were
-installed on the machine, which of those things are worth doing, and the
+> **Superseded.** WebDesk no longer runs container apps. This document describes
+> an arrangement the program had and does not have any more: every mechanism
+> below was a way of making a containerised application *resemble* something
+> installed on this machine, and the applications in the catalog are now simply
+> installed on this machine, as [Flatpaks drawn on the
+> host](../README.md#apps-drawn-on-this-host).
+>
+> It is kept rather than deleted for two reasons. The measurements are real —
+> taken on the deployment host, against images that were actually running — and
+> measurements do not stop being true because the thing they measured was
+> removed. And the *verdicts* below are the argument for the removal, read from
+> the other end: nine mechanisms, four shipped, five rejected, and every one of
+> them a question that does not arise once the process is an ordinary one in the
+> user's own session. The render node, the fonts, the `/home` mount and the
+> D-Bus collision are all, in the current design, simply already there.
+>
+> Nothing here describes code that still exists. `src/engine.rs` is gone.
+
+*What it took to make a containerised application behave as though it were
+installed on the machine, which of those things were worth doing, and the
 measurements behind each answer.*
 
 Everything below was measured on the deployment host — AlmaLinux 10.2,

@@ -33,6 +33,13 @@ const SCENES = {
   'files-empty': { label: 'Files — empty folder', signedIn: true, open: ['files'], emptyDir: true },
   'dialog-rename': { label: 'Dialog — rename', signedIn: true, open: ['files'], dialog: 'rename' },
   'dialog-delete': { label: 'Dialog — delete', signedIn: true, open: ['files'], dialog: 'delete' },
+  apps: { label: 'Apps', signedIn: true, open: ['apps'] },
+  'apps-empty': { label: 'Apps — nothing installed', signedIn: true, open: ['apps'], apps: 'none' },
+  // The panel at the top of the Apps window, which only appears on a host that
+  // is missing something. It is the reason half the Install buttons would fail,
+  // so it is worth a scene of its own rather than a hand-edit.
+  'apps-deps': { label: 'Apps — host is missing things', signedIn: true, open: ['apps'], deps: 'missing' },
+  'apps-failed': { label: 'Apps — install failed', signedIn: true, open: ['apps'], install: 'fails' },
 };
 
 const params = new URLSearchParams(location.search);
@@ -289,90 +296,72 @@ function updateCheck() {
   });
 }
 
-/* ----------------------------------------------------------- container apps */
+/* ----------------------------------------------------------------- apps */
 
-/* A representative slice of the catalog rather than all of it: one Selkies
-   desktop, the editor, and the terminal -- which between them use every kind of
-   blank the install form can draw (text, secret, toggle, path). Keeping a
-   second full copy of src/catalog.rs in step would be a chore with no payoff.
+/* A representative slice of the catalog rather than all of it: enough entries
+   to fill the Installed and Available lists and the dock. Keeping a second full
+   copy of src/catalog.rs in step would be a chore with no payoff.
 
    Which entries appear is still chosen here, but what they say is not: every
    field below that src/catalog.rs also names is overwritten from it at load
    (see "keeping up with the source"), so the strings in this literal are a
-   fallback for when the Rust cannot be read, not a second opinion. */
+   fallback for when the Rust cannot be read, not a second opinion.
 
-/* Desktop entries ask nothing: the title is the app's own name, the clock is
-   the host's, the identity is the installer's. Empty on purpose -- it is what
-   makes Install a single press with no dialog worth showing. */
-const DESKTOP_PARAMS = [];
+   There are no params, and there is no install form. Every question a container
+   entry used to ask had one obviously right answer for an application running
+   on this host as this user, so installing is a confirmation and nothing
+   else. */
 
-const DESKTOP_NOTE =
-  'A desktop application, drawn in the browser. Its state lives in the app ' +
-  'directory, so it is still there next time.';
+const APP_NOTE =
+  'Runs on this host as you, with your home directory, your fonts and your GPU, ' +
+  'and is drawn into this window. Its files are your files.';
 
 const APP_CATALOG = [
   {
     slug: 'firefox', name: 'Firefox', icon: 'a-firefox',
     tagline: 'The browser, running on this host rather than on your machine.',
-    image: 'lscr.io/linuxserver/firefox', notes: DESKTOP_NOTE, params: DESKTOP_PARAMS,
+    notes: APP_NOTE,
+    streamed: { flatpak: 'org.mozilla.firefox', width: 1600, height: 1000 },
   },
   {
     slug: 'inkscape', name: 'Inkscape', icon: 'a-inkscape',
     tagline: 'Vector drawing, for the SVGs this desktop is drawn with.',
-    image: 'lscr.io/linuxserver/inkscape', notes: DESKTOP_NOTE, params: DESKTOP_PARAMS,
+    notes: APP_NOTE,
+    streamed: { flatpak: 'org.inkscape.Inkscape', width: 1600, height: 1000 },
   },
   {
-    slug: 'vscodium-web', name: 'VSCodium', icon: 'a-vscodium',
-    tagline: 'VS Code without the telemetry, as a web editor rather than a drawn desktop.',
-    image: 'lscr.io/linuxserver/vscodium-web',
-    notes: 'Its extensions and settings live in the app directory.',
-    params: [
-      { key: 'DEFAULT_WORKSPACE', label: 'Workspace folder', kind: 'path', default: '', required: false,
-        help: 'Directory on the host to open. Mounted into the editor.' },
-      { key: 'CONNECTION_TOKEN', label: 'Connection token', kind: 'secret', default: '', required: false,
-        help: 'Optional. A secret the editor asks for; leave empty to run without one.' },
-      { key: 'SUDO_PASSWORD', label: 'sudo password', kind: 'secret', default: '', required: false,
-        help: 'Optional. Lets the editor’s terminal use sudo inside the container only.' },
-    ],
+    slug: 'baobab', name: 'Disk Analyzer', icon: 'a-baobab',
+    tagline: 'Where the disk went, as a picture rather than a column of numbers.',
+    notes: APP_NOTE,
+    streamed: { flatpak: 'org.gnome.baobab', width: 1100, height: 750 },
   },
   {
-    slug: 'term-hut-host', name: 'term.hut', icon: 'a-termhut',
-    tagline: 'An agent-aware terminal, run as a service on this host -- so its shell is the host\'s.',
-    image: '',
-    host: { unit: 'term-hut-web.service' },
-    notes: 'Runs on the host rather than in a container, which is the point: the shell it ' +
-           'hands out is a shell on this machine, with its packages, its services and its ' +
-           'files. Everyone who can sign in to WebDesk can open it, so it is worth being ' +
-           'sure that is the same set of people you would give an SSH account. Installing ' +
-           'fetches the term.hut Flatpak and writes a system unit that runs it as you, ' +
-           'bound to loopback. A unit already on this host is adopted untouched instead.',
-    /* No params, and that is the entry rather than an omission: everything a
-       host service is told lives in its unit file. */
-    params: [],
+    slug: 'gimp', name: 'GIMP', icon: 'a-gimp',
+    tagline: 'Photo and image editing, on the machine the images are already on.',
+    notes: APP_NOTE,
+    streamed: { flatpak: 'org.gimp.GIMP', width: 1600, height: 1000 },
   },
 ];
 
-/* Starts with one running and one stopped, so the dock, the running and
-   stopped rows, and the "not running" frame are all reachable without
-   installing anything first. */
+/* Starts with one open and one not, so the dock and both state words in the
+   Installed list are reachable without installing anything first. `absent` is
+   the ordinary condition of an app nobody has opened -- there is no user unit
+   until an open creates one -- and it reads as "Not open" rather than as a
+   fault. */
 let APPS_INSTALLED = scene.apps === 'none' ? [] : [
   {
-    slug: 'term-hut-host', name: 'term.hut', icon: 'a-termhut', state: 'running',
-    tagline: 'An agent-aware terminal, run as a service on this host -- so its shell is the host\'s.',
-    // A host service, so: no image, and a unit where a container name would be.
-    image: '', url: '/app/term-hut-host/', unit: 'term-hut-web.service',
-    installed: NOW - 4 * HOUR, actor: 'hutson', env: {},
-    secrets: [], mounts: [], notes: '',
+    slug: 'firefox', name: 'Firefox', icon: 'a-firefox', state: 'running',
+    tagline: 'The browser, running on this host rather than on your machine.',
+    flatpak: 'org.mozilla.firefox', ws: '/ws/rfb/firefox',
+    streamed: { flatpak: 'org.mozilla.firefox', width: 1600, height: 1000 },
+    installed: NOW - 4 * HOUR, actor: 'hutson', notes: '',
   },
   {
-    slug: 'firefox', name: 'Firefox', icon: 'a-firefox', state: 'exited',
-    tagline: 'The browser, running on this host rather than on your machine.',
-    image: 'lscr.io/linuxserver/firefox:latest', url: '/app/firefox/',
-    // TZ and TITLE are set by the installer from the host, not asked for, so
-    // this is what an installed desktop app's settings actually look like.
-    installed: NOW - 26 * HOUR, actor: 'hutson',
-    env: { TZ: 'America/Chicago', TITLE: 'firefox', PUID: '1000', PGID: '1000' },
-    secrets: [], mounts: [], notes: '',
+    slug: 'inkscape', name: 'Inkscape', icon: 'a-inkscape', state: 'absent',
+    tagline: 'Vector drawing, for the SVGs this desktop is drawn with.',
+    flatpak: 'org.inkscape.Inkscape', ws: '/ws/rfb/inkscape',
+    streamed: { flatpak: 'org.inkscape.Inkscape', width: 1600, height: 1000 },
+    installed: NOW - 26 * HOUR, actor: 'hutson', notes: '',
   },
 ];
 
@@ -381,8 +370,7 @@ let APPS_INSTALLED = scene.apps === 'none' ? [] : [
 /* The two lists above are a slice of src/catalog.rs, and a slice drifts. An
    entry gets a new icon or a new name in the Rust, this copy keeps the old
    one, and the preview draws something the app itself never draws -- a bug in
-   nothing but the preview, wearing the costume of a bug in the UI. That is how
-   term.hut came to sit in the dock under the terminal's icon.
+   nothing but the preview, wearing the costume of a bug in the UI.
    scripts/preview.py reads the real entries out of the Rust and leaves them in
    window.PREVIEW_CATALOG, which is what lets that be fixed here instead of
    noticed months later.
@@ -393,9 +381,10 @@ let APPS_INSTALLED = scene.apps === 'none' ? [] : [
    icon no sprite defines -- is said out loud, in the same spirit as the
    server's 501 for a route nobody mocked.
 
-   Params stay hand-written. They are the part preview.py does not read, and
-   the part this file exists to have opinions about: which blanks the install
-   form has to draw. A missing one shows up as a form with nothing on it. */
+   The window sizes stay hand-written. They are the part preview.py does not
+   read -- two integers rather than strings -- and they decide the size a
+   streamed window opens at, which is the one thing about an entry that a
+   preview is the right place to look at. */
 
 const PREVIEW_DRIFT = [];
 
@@ -417,13 +406,12 @@ function reconcile(entries, fields, where) {
   }
 }
 
-/* An installed app keeps its own image (the catalog's reference plus the tag
-   it was installed at) and its own notes (empty -- the install form's prose is
-   not what the settings pane shows), so only the fields that identify the
+/* An installed app keeps its own notes (empty -- the Available list's prose is
+   not what the Installed row shows), so only the fields that identify the
    application are taken from source. */
 if (window.PREVIEW_CATALOG && Object.keys(window.PREVIEW_CATALOG).length) {
-  reconcile(APP_CATALOG, ['name', 'tagline', 'image', 'icon', 'notes'], 'catalog');
-  reconcile(APPS_INSTALLED, ['name', 'tagline', 'icon'], 'installed');
+  reconcile(APP_CATALOG, ['name', 'tagline', 'icon', 'notes'], 'catalog');
+  reconcile(APPS_INSTALLED, ['name', 'tagline', 'icon', 'flatpak'], 'installed');
 } else {
   PREVIEW_DRIFT.push(
     'src/catalog.rs could not be read, so nothing here was checked against it ' +
@@ -470,21 +458,17 @@ window.addEventListener('load', () => {
   });
 });
 
-const APPS_ENGINE = scene.engine === 'missing'
-  ? { name: null, error: 'no container engine found on this host', ready: false }
-  : { name: 'docker 27.1.1', error: null, ready: true };
-
 const PULL_LOG = [
-  '$ docker pull lscr.io/linuxserver/SLUG:latest',
-  'latest: Pulling from linuxserver/SLUG',
-  '1f7ce2fa46ab: Pull complete',
-  '9d3e1a7c0b21: Pull complete',
-  'a04f8c2e5d13: Downloading [==============>        ]  18.2MB/31.4MB',
-  'a04f8c2e5d13: Pull complete',
-  'Digest: sha256:6b1c4f0e9a7d3852be10c4f9a2d7e5b3c8f0a91d4e6b27c5083fa1d9e4c7b206',
-  'Status: Downloaded newer image for lscr.io/linuxserver/SLUG:latest',
-  '$ docker run -d --name webdesk-SLUG ...',
-  'c3f9a1e7b204d85fa0c6e19b7d3428f5019ace6b7d24f80915ca3e6b7089d1f4',
+  '$ flatpak install -y --system flathub ID',
+  'Looking for matches...',
+  'Required runtime for ID found in remote flathub',
+  '',
+  'ID permissions:',
+  '    ipc  network  fallback-x11  wayland  dri  pulseaudio',
+  '',
+  '1. org.freedesktop.Platform.GL.default   0 bytes',
+  '2. ID                                    184.2 MB / 291.0 MB',
+  'Installation complete.',
 ];
 
 let installState = { state: 'idle' };
@@ -495,24 +479,25 @@ function appsStatus() {
 
   installTicks++;
   const slug = installState.slug;
-  const lines = PULL_LOG.map((l) => l.replaceAll('SLUG', slug));
+  const entry = APP_CATALOG.find((a) => a.slug === slug);
+  const id = entry ? entry.streamed.flatpak : slug;
+  const lines = PULL_LOG.map((l) => l.replaceAll('ID', id));
 
   if (installTicks > 6) {
     // Land on a finished state so the installed row, the toast and the new
-    // dock icon are all reachable without a registry.
+    // dock icon are all reachable without a Flathub to reach.
     if (scene.install === 'fails') {
       installState = {
-        state: 'failed', slug, name: installState.name,
-        error: 'docker run failed (exit status: 125)',
+        state: 'failed', slug, name: installState.name, phase: 'downloading',
+        error: `error: The application ${id} was not found`,
       };
-      return json({ status: installState, log: lines.slice(0, 8).join('\n') +
-        '\ndocker: Error response from daemon: driver failed programming external connectivity' });
+      return json({ status: installState, log: lines.slice(0, 3).join('\n') +
+        `\nerror: The application ${id} was not found` });
     }
-    const entry = APP_CATALOG.find((a) => a.slug === slug);
     APPS_INSTALLED = [...APPS_INSTALLED, {
       slug, name: entry.name, icon: entry.icon, tagline: entry.tagline, notes: entry.notes,
-      image: `${entry.image}:latest`, url: `/app/${slug}/`, state: 'running',
-      installed: NOW, actor: USER.username, env: {}, secrets: [], mounts: [],
+      flatpak: id, ws: `/ws/rfb/${slug}`, streamed: entry.streamed, state: 'absent',
+      installed: NOW, actor: USER.username,
     }];
     installState = { state: 'done', slug, name: entry.name };
     return json({ status: installState, log: lines.join('\n') });
@@ -520,7 +505,7 @@ function appsStatus() {
   return json({
     status: {
       state: 'running',
-      phase: installTicks > 4 ? 'creating' : 'pulling',
+      phase: installTicks > 4 ? 'recording' : 'downloading',
       slug,
       name: installState.name,
     },
@@ -557,35 +542,81 @@ const ROUTES = [
 
   ['GET', /^\/api\/apps\/catalog$/, () => (signedIn ? json({
     apps: APP_CATALOG,
-    engine: APPS_ENGINE,
-    allowed: USER.admin && APPS_ENGINE.ready,
+    allowed: USER.admin,
     admin: USER.admin,
     admin_groups: ['wheel', 'sudo'],
   }) : unauthorized())],
   ['GET', /^\/api\/apps\/list$/, () => (signedIn ? json({
-    apps: APPS_INSTALLED, admin: USER.admin, engine: APPS_ENGINE.name,
+    apps: APPS_INSTALLED, admin: USER.admin,
   }) : unauthorized())],
+  /* What the host is missing, which is the panel at the top of the Apps window.
+     `scene.deps === 'missing'` is how to look at it; the default host has
+     everything, so the panel is hidden and the Install buttons work. */
+  ['GET', /^\/api\/deps$/, () => (signedIn ? json(
+    scene.deps === 'missing'
+      ? {
+        manager: 'dnf',
+        deps: [
+          { key: 'sway', label: 'Sway', need: 'streamed', present: false, offered: true,
+            group: 'compositor', package: 'sway',
+            why: 'The compositor a drawn app runs inside. Its output can be resized, so ' +
+                 "an application's resolution follows the WebDesk window." },
+          { key: 'wayvnc', label: 'wayvnc', need: 'streamed', present: false, offered: true,
+            group: null, package: 'wayvnc',
+            why: "Turns the compositor's output into a stream this browser can draw." },
+        ],
+      }
+      : { manager: 'dnf', deps: [] },
+  ) : unauthorized())],
+  ['POST', /^\/api\/deps\/install$/, () => {
+    installState = { state: 'running', phase: 'packages', slug: '', name: '' };
+    installTicks = 0;
+    return json({ ok: true });
+  }],
   ['GET', /^\/api\/apps\/status$/, () => (signedIn ? appsStatus() : unauthorized())],
   ['POST', /^\/api\/apps\/install$/, (_m, _q, body) => {
     const entry = APP_CATALOG.find((a) => a.slug === (body && body.slug));
     if (!entry) return json({ error: 'not in the catalog' }, 404);
-    installState = { state: 'running', phase: 'pulling', slug: entry.slug, name: entry.name };
+    installState = { state: 'running', phase: 'downloading', slug: entry.slug, name: entry.name };
     installTicks = 0;
     return json({ ok: true, started: true, slug: entry.slug });
   }],
-  ['POST', /^\/api\/apps\/start$/, (_m, _q, body) => {
+  /* Opening answers with the socket and nothing else. There is no RFB server
+     behind it here, so the window gets as far as its own "Starting…" veil and
+     the connection then fails -- which is what the veil's failure state is for,
+     and is reachable in the preview only this way. */
+  ['POST', /^\/api\/apps\/open$/, (_m, _q, body) => {
     APPS_INSTALLED = APPS_INSTALLED.map(
       (a) => (a.slug === body.slug ? { ...a, state: 'running' } : a));
-    return json({ ok: true });
+    return json({ ok: true, ws: `/ws/rfb/${body.slug}` });
   }],
-  ['POST', /^\/api\/apps\/stop$/, (_m, _q, body) => {
+  ['POST', /^\/api\/apps\/close$/, (_m, _q, body) => {
     APPS_INSTALLED = APPS_INSTALLED.map(
-      (a) => (a.slug === body.slug ? { ...a, state: 'exited' } : a));
+      (a) => (a.slug === body.slug ? { ...a, state: 'absent' } : a));
     return json({ ok: true });
   }],
+  ['POST', /^\/api\/apps\/resize$/, () => json({ ok: true })],
+  /* Removal refuses once and then does it, which is the two-step the real host
+     insists on: the Flatpak is host-wide, so taking it away takes it away from
+     everybody, and that has to be said out loud before it happens. */
   ['POST', /^\/api\/apps\/remove$/, (_m, _q, body) => {
+    const app = APPS_INSTALLED.find((a) => a.slug === body.slug);
+    if (app && !body.accept_uninstall) {
+      return json({
+        error: `${app.name} is installed once for this whole host, so removing it ` +
+               'uninstalls it for everyone.',
+        offer: {
+          uninstall: app.flatpak,
+          detail: `WebDesk installed ${app.flatpak} on this host and will uninstall it. ` +
+                  `Anyone who has ${app.name} open right now will have it stop \u2014 here ` +
+                  "or at the machine's own screen \u2014 and anything unsaved in it will " +
+                  'be lost. Each person\u2019s own files stay where they are, in their ' +
+                  'home directory.',
+        },
+      }, 409);
+    }
     APPS_INSTALLED = APPS_INSTALLED.filter((a) => a.slug !== body.slug);
-    return json({ ok: true, purged: !!(body && body.purge) });
+    return json({ ok: true, uninstalled: true, note: null });
   }],
 ];
 

@@ -23,14 +23,15 @@ was not.
 ## Why Flathub pairs well with this project
 
 A streamed entry is a Flatpak that runs on this host as the signed-in user,
-under a headless `cage` compositor, with `wayvnc` serving RFB into a WebDesk
-window. It is the third kind of entry in the catalog, after the container and
-the adopted host service, and it exists because of four of the README's own
-[Known limits](../README.md#known-limits) — downloads landing in an app
-directory instead of `~/Downloads`, a passwordless root shell inside every
-desktop container, `/home` mounted read-write into all of them, and a gigabyte
-of shared memory each. A Flatpak on the host has none of those, and not because
-they were fixed: because it is not a container.
+under a headless compositor, with `wayvnc` serving RFB into a WebDesk window. It
+is now the *only* kind of entry in the catalog. It arrived as the third, beside
+a container and an adopted host service, and it answered four of the README's
+own Known limits so completely that the other two kinds were removed
+outright — downloads landing in an app directory instead of `~/Downloads`, a
+passwordless root shell inside every desktop container, `/home` mounted
+read-write into all of them, and a gigabyte of shared memory each. A Flatpak on
+the host has none of those, and not because they were fixed: because it is not a
+container.
 
 What Flathub adds on top of that is five things this project would otherwise
 have had to build for itself.
@@ -55,13 +56,14 @@ untouched by WebDesk. No state directory is invented, no volume is mounted, no
 `config_at` is filled in, and two people with the same app open are not sharing
 a profile.
 
-**A genuine update path.** This is the one worth dwelling on. The README lists
-"updating an installed app to a newer image" under
-[Not built yet](../README.md#not-built-yet), and that is accurate: an installed
-container entry stays on the image it was pulled with. The Flathub path simply
-does not have that gap — `flatpak::update()` runs `flatpak update --system <id>`
-and that is the entire feature. Note the contrast with the *other* Flatpak in
-this catalog: term.hut ships as a bundle with no `--runtime-repo`, so its
+**A genuine update path.** This is the one worth dwelling on. A container entry
+stayed on the image it was pulled with and there was no mechanism anywhere to
+move it. The Flathub path simply does not have that gap —
+`flatpak::update()` runs `flatpak update --system <id>` and that is the entire
+feature. (It is still on the README's [Not built
+yet](../README.md#not-built-yet) list, but for a different and much smaller
+reason: nothing calls it. No button, no route, no scheduled check.) Note the
+contrast with a Flatpak shipped as a *bundle* with no `--runtime-repo`: its
 installed origin is one no remote knows and `flatpak update` answers "Nothing to
 do" forever, which is why `newest_bundle` exists. `FlatpakSource` is the field
 that tells those two apart, and Flathub is the half that gets the cheap answer.
@@ -289,11 +291,11 @@ genuinely native in 2026. GIMP, Inkscape and Krita are the shape of this.
 - **X11 only.** An app with no `wayland` socket needs Xwayland under `cage`,
   which is one more component that has to be present and working. Krita declares
   `x11` and not `wayland`; that is not a refusal, it is a thing to test.
-- **It is already a web app.** The clearest no of all. If the application ships
-  a web interface, put *that* behind the proxy as a container entry or a host
-  service and get a real HTML document, a working clipboard, sound, and no video
-  encoder. term.hut is on the host precisely because it serves a web interface;
-  streaming it would have been strictly worse.
+- **It is already a web app.** The clearest no of all. Streaming a web
+  application is encoding video of a browser rendering a document your browser
+  could have rendered itself — you lose the clipboard, the sound and the text
+  selection, and you pay for an encoder to do it. Run it wherever you already
+  run things and add it as a [URL app](url-apps.md) instead.
 
 `org.videolan.VLC` is a useful example of the tool refusing to be enthusiastic:
 it flags PulseAudio, X11-only, *and* a status-notifier name in one run. VLC is
@@ -312,14 +314,14 @@ and refuses anything else. A shell script doing that resolution would have been
 a way to run any Flatpak on this host as anyone — the exact hole the fixed
 catalog exists to close, arrived at from a new direction.
 
-**But one thing genuinely changes, and it is worth being precise about it.** The
-README says the requirement that decides catalog membership is *"an entry must
-work when served from `/app/<slug>/` instead of `/`"*. That requirement does not
-apply to a streamed entry at all. There is no proxy, no prefix, no
-`X-Forwarded-Prefix`, no `base` template and no blank frame to diagnose; the
-browser reaches the app over `/ws/rfb/<slug>` and what arrives is pixels. The
-three-curls check the README asks you to run before adding a container entry has
-nothing to test here.
+**But one thing genuinely changed, and it is worth being precise about it.** The
+requirement that used to decide catalog membership was *"an entry must work when
+served from `/app/<slug>/` instead of `/`"*. That never applied to a streamed
+entry: there is no proxy, no prefix, no `X-Forwarded-Prefix`, no `base` template
+and no blank frame to diagnose, because the browser reaches the app over
+`/ws/rfb/<slug>` and what arrives is pixels. When the last entry that *did* have
+to answer it was removed, the requirement went with it — along with the proxy it
+was a requirement of.
 
 So the gate stops being about compatibility and becomes purely about judgement:
 is this worth streaming, is it small enough, and do you trust the publisher.
@@ -361,11 +363,10 @@ identity, state and isolation. It is not free, and these are its edges.
   `deps.rs` probes for the binaries rather than for package names, which is the
   right shape because the package that provides one differs per distribution and
   the binary does not — but on EL9 there is no package to offer at all, and the
-  honest answer there is a refusal with instructions, the same shape term.hut's
-  `provision` already uses.
+  honest answer there is a refusal with instructions.
 - **`flatpak` itself is not a build dependency.** A host that will only ever run
-  container apps should not be made to carry it, so it is probed and offered
-  like the rest.
+  the file manager and the terminal should not be made to carry it, so it is
+  probed and offered like the rest.
 
 ## Reading list
 
@@ -373,8 +374,10 @@ identity, state and isolation. It is not free, and these are its edges.
   `FlatpakSource`.
 - [`scripts/flathub-entry.py`](../scripts/flathub-entry.py) — the tool, and its
   header comment on what it refuses to do.
-- [README, *Why the catalog is fixed*](../README.md#why-the-catalog-is-fixed) —
+- [README, *Apps drawn on this host*](../README.md#apps-drawn-on-this-host) —
   the gate this widens without removing.
+- [`docs/url-apps.md`](url-apps.md) — the answer for an application that already
+  serves a web interface, which is the one case this document says no to.
 - [`docs/host-access.md`](host-access.md) — what it took to make a *container*
   behave as though it were installed, which is the problem a streamed entry does
-  not have.
+  not have. Kept as the measured record of an arrangement WebDesk no longer has.

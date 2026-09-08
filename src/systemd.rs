@@ -1,106 +1,37 @@
-//! The host's service manager, for the applications WebDesk does not run itself.
+//! The signed-in user's service manager, for the applications drawn on this host.
 //!
-//! `engine.rs` is the twin of this file: both wrap a program that starts and
-//! stops something, and both are asked the same three questions -- is it there,
-//! what state is it in, make it the other state. The difference is what is on
-//! the other end. The engine runs an image WebDesk chose and created, so
-//! WebDesk owns its whole life. A unit here lives in `/etc/systemd/system` and
-//! would go on running if WebDesk were uninstalled -- it may have been written
-//! by the operator, and if it was, this module only ever starts and stops it.
+//! One manager, and it is deliberately not the machine's. A streamed
+//! application's subject is your home directory, so a single host-wide instance
+//! shared by everyone would be pointed at the wrong person's files. Each of
+//! these runs in the systemd *user* manager of whoever opened it.
 //!
-//! There is a second manager below the halfway line of this file. A streamed
-//! application runs in the *user's* systemd manager rather than the machine's,
-//! and that half is the same three questions asked one bus over -- see the
-//! banner above `APP_UNIT`. The rule is not relaxed for it: the template is
-//! still a constant, and all a request contributes is a slug that has to be in
-//! the catalog before anything is spawned.
+//! This file used to have two halves. The other one drove `/etc/systemd/system`
+//! on behalf of the adopted host services, and it went when they did -- along
+//! with `write_unit`, which was the only place WebDesk ever wrote a unit into
+//! `/etc` as root. What is left never leaves a user's own manager, which makes the
+//! security argument shorter than it was rather than merely different: the most
+//! a request can now cause is a process in the requester's own session.
 //!
-//! **Where the boundary is, and where it is not.** A host service is a process
-//! running as a real user on the real machine -- which is the entire point of
-//! one, and also why it must not be *describable* from the browser. A unit file
-//! assembled out of a request would be a way to run arbitrary code as root,
-//! which is a strictly larger hole than the engine socket.
-//!
-//! This file does now write a unit, which it did not before, and the line it
-//! holds is the one that was always doing the work: **the unit is a constant.**
-//! Its name and its entire body are `&'static str` in `catalog.rs`, so the set
-//! of units that can exist is a property of the build, exactly as the set of
-//! images is. `write_unit` interpolates two values and no others -- the user
-//! and uid the service runs as -- and takes them from the caller's
-//! authenticated session rather than from the request body, so the most a
-//! request can decide is *whether* a unit the build already contains is
-//! written, and never what is in it. A unit already on the machine is adopted
-//! untouched, so an operator who wrote their own keeps it.
+//! **The rule that survives is the one that was doing the work: the template is
+//! a constant.** `APP_UNIT` is a `&'static str` below, so the set of units that
+//! can exist is a property of the build. A request contributes one thing, a
+//! slug, and it becomes an instance name -- `webdesk-app@<slug>.service` -- that
+//! `webdesk app-session` resolves against the catalog compiled into the binary
+//! and refuses if it is not there. A unit whose `ExecStart` interpolated a
+//! Flatpak id would be a way to run any Flatpak on this host; `%i` is not.
 //!
 //! Everything here degrades to a report rather than an error. A host without
-//! systemd at all is a host where these entries simply cannot be installed, and
-//! saying so is more use than a failure that reads like a bug.
+//! systemd at all is a host where these entries simply cannot run, and saying so
+//! is more use than a failure that reads like a bug.
 
 use std::process::Command;
 
-/// Whether this host has systemd to talk to.
-///
-/// Checked rather than assumed: every target distribution has it, but the
-/// development machines this is built on do not, and a missing binary should
-/// read as "not that kind of host" rather than as a crash.
-pub fn available() -> bool {
-    crate::engine::which("systemctl").is_some()
-}
-
-/// One `systemctl show` property, or `None` when systemd would not answer.
-///
-/// `show` rather than `is-active`/`status`: it exits 0 even for a unit that
-/// does not exist, so the answer to "is this unit here" arrives as a value to
-/// read instead of an exit code to interpret. The two states this file cares
-/// about are then plain string comparisons.
-fn property(unit: &str, name: &str) -> Option<String> {
-    let out = Command::new("systemctl")
-        .args(["show", unit, "--property", name, "--value"])
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let v = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if v.is_empty() {
-        None
-    } else {
-        Some(v)
-    }
-}
-
-/// Whether systemd has a unit by this name loaded at all.
-///
-/// The check an install makes before recording anything: an entry whose service
-/// is not on the machine yet would otherwise install cleanly and then answer
-/// 502 from the dock, with nothing anywhere saying why.
-pub fn known(unit: &str) -> bool {
-    matches!(property(unit, "LoadState").as_deref(), Some("loaded"))
-}
-
-/// The unit's state, in the same words `engine::state` uses for a container, so
-/// that one dock can paint both without knowing which it is looking at.
-///
-/// `absent` is the one word this adds, and it is the one the container
-/// vocabulary has no equivalent for: a container WebDesk created and then lost
-/// is `missing`, which is a fault, while a unit that was never installed is an
-/// ordinary thing to find and is what the entry's `provision` text is for.
-///
-/// Never an error. A service stopped behind our back is a state to report.
-pub fn state(unit: &str) -> String {
-    word_for(property(unit, "LoadState").as_deref(), || property(unit, "ActiveState"))
-}
-
 /// The two `systemctl show` answers turned into one of the dock's words.
 ///
-/// Split out of `state` when `user_state` appeared, because the two ask the
-/// same question of different managers and the vocabulary has to be the same
-/// word for word. Kept apart they would drift by one state at a time, and the
-/// symptom of that is a raw systemd token painted in the Apps window.
-///
-/// The active state is a closure rather than a value: on a `LoadState` that
-/// already settles the answer there is no reason to spend a second `systemctl`
-/// on it, and a user manager reached over the bus is the expensive one.
+/// Never an error: a service stopped behind our back is a state to report. The
+/// active state is a closure rather than a value because a `LoadState` that
+/// already settles the answer is no reason to spend a second `systemctl` on it,
+/// and a user manager reached over the bus is the expensive one.
 fn word_for(load: Option<&str>, active: impl FnOnce() -> Option<String>) -> String {
     match load {
         Some("loaded") => {}
@@ -116,109 +47,6 @@ fn word_for(load: Option<&str>, active: impl FnOnce() -> Option<String>) -> Stri
     }
 }
 
-/// Run one `systemctl` verb against a unit, reporting what it said on failure.
-///
-/// stderr rather than the exit code, because the exit code of a refused start
-/// is the same as the exit code of a unit that failed to come up, and only one
-/// of those is worth showing somebody.
-fn act(verb: &str, unit: &str) -> Result<(), String> {
-    let out = Command::new("systemctl")
-        .args([verb, unit])
-        .output()
-        .map_err(|e| format!("could not run systemctl: {e}"))?;
-    if out.status.success() {
-        return Ok(());
-    }
-    let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
-    Err(if err.is_empty() { format!("systemctl {verb} {unit} failed") } else { err })
-}
-
-pub fn start(unit: &str) -> Result<(), String> {
-    act("start", unit)
-}
-
-/// Where a system unit lives. `/etc` rather than `/usr/lib`: this is local
-/// configuration, and an operator editing it afterwards should find it in the
-/// directory that belongs to them.
-fn unit_path(unit: &str) -> std::path::PathBuf {
-    std::path::Path::new("/etc/systemd/system").join(unit)
-}
-
-/// Write a unit from the catalog, substituting the identity it runs as.
-///
-/// `unit` and `body` are both `&'static str` from `catalog.rs` -- see the
-/// module docs for why that is the whole of the security argument here. `user`
-/// and `uid` come from the session of whoever pressed Install.
-///
-/// Refuses rather than overwrites. A unit already on this host was put there by
-/// somebody, may not say what this one says, and is very likely serving the app
-/// right now; replacing it silently would be the one way this could take a
-/// working host service away from its operator.
-pub fn write_unit(
-    unit: &'static str,
-    body: &'static str,
-    user: &str,
-    uid: u32,
-) -> Result<(), String> {
-    let path = unit_path(unit);
-    if path.exists() {
-        return Err(format!("{} already exists", path.display()));
-    }
-    let text = body.replace("{user}", user).replace("{uid}", &uid.to_string());
-    std::fs::write(&path, text).map_err(|e| format!("could not write {}: {e}", path.display()))?;
-    // Without this systemd goes on believing what it read at boot, and the
-    // enable that follows fails on a unit that is sitting right there.
-    reload()
-}
-
-/// Remove a unit WebDesk wrote. Best effort, and only ever called for the unit
-/// named in the entry being removed.
-pub fn remove_unit(unit: &'static str) {
-    let _ = std::fs::remove_file(unit_path(unit));
-    let _ = reload();
-}
-
-pub fn reload() -> Result<(), String> {
-    let out = Command::new("systemctl")
-        .arg("daemon-reload")
-        .output()
-        .map_err(|e| format!("could not run systemctl: {e}"))?;
-    if out.status.success() {
-        return Ok(());
-    }
-    Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
-}
-
-/// Start it now and at every boot. One call because the two are never wanted
-/// apart here: a terminal that is in the Apps window but gone after a reboot
-/// is a bug report, not a feature.
-pub fn enable_now(unit: &str) -> Result<(), String> {
-    let out = Command::new("systemctl")
-        .args(["enable", "--now", unit])
-        .output()
-        .map_err(|e| format!("could not run systemctl: {e}"))?;
-    if out.status.success() {
-        return Ok(());
-    }
-    let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
-    Err(if err.is_empty() { format!("systemctl enable --now {unit} failed") } else { err })
-}
-
-pub fn stop(unit: &str) -> Result<(), String> {
-    act("stop", unit)
-}
-
-// ---------------------------------------------------------------------------
-// User units, for the applications that are drawn on this host.
-//
-// Everything above this line manages *system* units, which is right for a
-// service whose subject is the machine. A streamed application is the opposite:
-// its subject is your home directory, so one host-wide instance shared by
-// everyone would be the wrong machine's files by exactly the argument that put
-// term.hut on the host in the first place. These run in the signed-in user's
-// own systemd manager instead.
-// ---------------------------------------------------------------------------
-
 /// The template unit every streamed application is started from.
 ///
 /// **One unit for all of them, and the instance name is a slug.** That is the
@@ -230,10 +58,10 @@ pub fn stop(unit: &str) -> Result<(), String> {
 /// contains runs.
 ///
 /// A user unit, so `User=` is absent and `HOME`, `XDG_RUNTIME_DIR` and the
-/// session bus are whatever the manager already has -- which is the point. Note
-/// how much shorter this is than `TERM_HUT_UNIT` for that one reason: the three
-/// `Environment=` lines that unit needs are three a user manager has already set
-/// correctly, and cannot set wrongly.
+/// session bus are whatever the manager already has -- which is the point. A
+/// system unit for the same application would need three `Environment=` lines
+/// to reconstruct them, and could get any of the three wrong; a user manager has
+/// already set all three correctly and cannot do otherwise.
 ///
 /// `{exe}` is the only substitution, and it is not a value anybody sends us --
 /// see `exe_path`. There is deliberately no `{user}` and no `{uid}`: a template
@@ -249,33 +77,30 @@ Description=%i, drawn on this host and streamed into a WebDesk window
 [Service]
 Type=simple
 
-# No User=, and that absence is the entry rather than an omission. term.hut is a
-# system unit running as one named person because its subject is the machine;
-# this is the opposite kind of application. Started in your own manager it is
-# your files it opens, which is the only version of it worth having.
+# No User=, and that absence is the entry rather than an omission. A system unit
+# would have to name one person, and this is an application whose subject is
+# whoever opened it. Started in your own manager it is your files it opens,
+# which is the only version of it worth having.
 #
 # The argument is a slug and never an application id -- see the doc comment.
 ExecStart={exe} app-session %i
 
-# The failure TERM_HUT_UNIT documents, in a unit that is not allowed to say the
-# words. `flatpak run` hands the application to the session helper, which puts
-# it in a systemd *scope* of its own outside this service's cgroup, so stopping
-# the service kills the compositor and the launcher and leaves the application
-# running -- holding this user's files, with nothing left anywhere to draw it.
-# `flatpak kill` by id is the one handle that reaches into that scope.
+# systemd cannot reach the application on its own. `flatpak run` hands it to the
+# session helper, which puts it in a systemd *scope* of its own outside this
+# service's cgroup, so stopping the service kills the compositor and the
+# launcher and leaves the application running -- holding this user's files, with
+# nothing left anywhere to draw it. `flatpak kill` by id is the one handle that
+# reaches into that scope.
 #
 # The id may not appear here, so the kill is spelled the only way this unit is
 # allowed to spell anything: the same binary, the same slug, and the id looked
-# up in the catalog it was built with. The leading `-` for the reason term.hut
-# has one -- nothing to kill is the ordinary case and is not a failed stop.
-# There is no matching ExecStartPre because ExecStart is ours and clears the
-# ground itself; term.hut needed one only because its ExecStart was `flatpak
-# run` directly.
+# up in the catalog it was built with. The leading `-` because nothing to kill
+# is the ordinary case and is not a failed stop. There is no matching
+# ExecStartPre because ExecStart is ours and clears the ground itself.
 ExecStop=-{exe} app-session %i --kill
 
-# Said out loud because the sibling unit says on-failure and a reader arriving
-# from it will assume this one does too. Quitting the application is how you
-# close it. `on-failure` would not fire on that, but an application that dies on
+# Said out loud because a service unit that omits it reads as an oversight.
+# Quitting the application is how you close it. `on-failure` would not fire on that, but an application that dies on
 # startup would loop for as long as the window is open, and the dock would paint
 # `restarting` forever instead of `failed` once -- and only one of those is a
 # fact somebody can act on.
@@ -393,8 +218,8 @@ pub fn install_app_template(uid: u32, user: &str) -> Result<(), String> {
     own(&path, uid, gid)?;
 
     // Without this the manager goes on believing what it read at login, and the
-    // start that follows fails on a unit that is sitting right there -- what
-    // `write_unit` says about the system manager, one bus over.
+    // start that follows fails on a unit that is sitting right there. The same
+    // reload a unit written into /etc needs, one bus over.
     user_act("daemon-reload", user, "")
 }
 
@@ -459,9 +284,9 @@ pub fn user_act(verb: &str, user: &str, unit: &str) -> Result<(), String> {
 
 /// One `systemctl show` property out of a user's manager, or `None`.
 ///
-/// The twin of `property`, absent for one more reason than that one has: a user
-/// with no session and no lingering has no manager at all, and that has to
-/// answer nothing rather than answer wrongly.
+/// Absent for one more reason than a system unit's would be: a user with no
+/// session and no lingering has no manager at all, and that has to answer
+/// nothing rather than answer wrongly.
 fn user_property(user: &str, unit: &str, name: &str) -> Option<String> {
     let out = Command::new("systemctl")
         .args(["--user", &machine(user), "show", unit, "--property", name, "--value"])
@@ -480,9 +305,9 @@ fn user_property(user: &str, unit: &str, name: &str) -> Option<String> {
 
 /// The state of a user unit, in the words the dock already paints.
 ///
-/// Never an error, for the reason `state` is not, and `absent` covers one more
-/// case here: a user whose manager is not running has no unit to report, which
-/// is exactly what an app nobody has opened is.
+/// Never an error, and `absent` is doing more work than it looks: a user whose
+/// manager is not running has no unit to report, which is exactly the condition
+/// of an app nobody has opened.
 pub fn user_state(user: &str, unit: &str) -> String {
     word_for(user_property(user, unit, "LoadState").as_deref(), || {
         user_property(user, unit, "ActiveState")
@@ -498,63 +323,18 @@ pub fn app_unit(slug: &str) -> String {
 mod tests {
     use super::*;
 
-    /// A name systemd cannot have a unit for reads as `absent`, on a host with
-    /// systemd and on one without. The second half is what makes this test
-    /// runnable on the machines this is developed on.
-    #[test]
-    fn a_unit_that_is_not_there_is_absent_rather_than_an_error() {
-        assert_eq!(state("webdesk-definitely-not-a-real-unit.service"), "absent");
-        assert!(!known("webdesk-definitely-not-a-real-unit.service"));
-    }
-
     /// The words this file returns are the words the dock already knows. A
     /// state invented here would paint as a raw systemd token in the Apps
     /// window, which is how `deactivating` would reach a user.
-    /// The substitutions are the only ones, and they reach every place the unit
-    /// names the identity. A template that interpolated nothing would run the
-    /// terminal as root; one that missed the uid would point the service at a
-    /// runtime directory that is not the user's.
-    #[test]
-    fn a_written_unit_names_the_user_and_nothing_else_is_substituted() {
-        let body = crate::catalog::TERM_HUT_UNIT;
-        let text = body.replace("{user}", "someone").replace("{uid}", "1234");
-        assert!(!text.contains('{'), "a placeholder survived: {text}");
-        assert!(text.contains("User=someone"));
-        assert!(text.contains("XDG_RUNTIME_DIR=/run/user/1234"));
-        assert!(text.contains("unix:path=/run/user/1234/bus"));
-        // The two flags that decide how many doors this terminal has. Loopback
-        // so WebDesk's sign-in is the only way in, and no token of its own
-        // because reaching it already means getting past that sign-in -- the
-        // same argument the container entry used to make with HUT_NO_TOKEN.
-        assert!(text.contains("--host 127.0.0.1"));
-        assert!(text.contains("--no-token"));
-    }
-
-    /// Every host entry that writes a unit must have a body to write, and it
-    /// must be a unit file rather than whatever else a `&'static str` could be.
-    #[test]
-    fn every_host_entry_carries_a_unit_it_could_write() {
-        for app in crate::catalog::CATALOG.iter().filter(|a| a.host.is_some()) {
-            let host = app.host.as_ref().unwrap();
-            assert!(
-                host.unit_body.contains("[Service]") && host.unit_body.contains("ExecStart="),
-                "{} has no unit body to write",
-                app.slug
-            );
-            // A unit that never starts at boot would vanish from the Apps
-            // window after a reboot with nothing saying why.
-            assert!(host.unit_body.contains("[Install]"), "{} would not survive a reboot", app.slug);
-        }
-    }
-
+    ///
+    /// `root` because it is the one account every host has; on a host where its
+    /// manager is not running -- or where there is no systemd at all, which is
+    /// what makes this runnable on the machines this is developed on -- the
+    /// answer is `absent`, and that is one of the six.
     #[test]
     fn every_state_is_one_the_dock_has_a_name_for() {
         const KNOWN: &[&str] =
             &["running", "exited", "restarting", "failed", "absent", "unknown"];
-        assert!(KNOWN.contains(&state("webdesk-not-a-unit.service").as_str()));
-        // The user manager answers in the same six words or in none of them.
-        // `root` because it is the one account every host has; on a host where
-        // its manager is not running this is `absent`, which is the point.
         assert!(KNOWN.contains(&user_state("root", "webdesk-not-a-unit.service").as_str()));
     }
 
@@ -626,12 +406,8 @@ mod tests {
         // word `flatpak` either. This unit's whole knowledge of Flatpak is that
         // the binary it starts has some.
         for app in crate::catalog::CATALOG {
-            if let Some(s) = &app.streamed {
-                assert!(!APP_UNIT.contains(s.flatpak.id), "the unit names {}", s.flatpak.id);
-            }
-            if let Some(fp) = app.host.as_ref().and_then(|h| h.flatpak.as_ref()) {
-                assert!(!APP_UNIT.contains(fp.id), "the unit names {}", fp.id);
-            }
+            let id = app.streamed.flatpak.id;
+            assert!(!APP_UNIT.contains(id), "the unit names {id}");
         }
         assert!(!directives().contains("flatpak"), "the unit runs flatpak itself");
 
@@ -650,8 +426,8 @@ mod tests {
 
     /// The unit stops what it starts. `flatpak run` puts the application in a
     /// scope of its own, so a template with no `ExecStop` would leave it running
-    /// after the unit went inactive -- the failure `TERM_HUT_UNIT` documents,
-    /// arriving in a file that cannot name the application to kill it.
+    /// after the unit went inactive, in a file that is not allowed to name the
+    /// application in order to kill it.
     #[test]
     fn stopping_the_unit_reaches_the_application_it_started() {
         assert!(APP_UNIT.contains("ExecStop=-{exe} app-session %i --kill"));

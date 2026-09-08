@@ -39,29 +39,25 @@ SOURCE = "https://raw.githubusercontent.com/simple-icons/simple-icons/develop/ic
 # is mostly outline (Inkscape).
 ICONS = [
     ("a-firefox", "firefoxbrowser", 0.80),
-    # `heliumbrowser`, not `helium`. The latter is the Helium Network at
-    # helium.com, a LoRaWAN and crypto company that shares only the word with
-    # the Chromium fork this catalog installs. Two entries, one obvious name,
-    # and picking by name alone ships the wrong company's logo.
-    ("a-helium", "heliumbrowser", 0.82),
     ("a-onlyoffice", "onlyoffice", 0.84),
     ("a-bitwarden", "bitwarden", 0.84),
     ("a-localsend", "localsend", 0.86),
     ("a-gimp", "gimp", 0.86),
     ("a-dbeaver", "dbeaver", 0.86),
     ("a-inkscape", "inkscape", 0.88),
-    ("a-vscodium", "vscodium", 0.88),
 ]
 
-# Marks that live in the sprite but are not Simple Icons' to give. `a-termhut`
-# is first-party and comes from its own site repository; Remmina and Disk
-# Analyzer are simply not in the set, so their marks were added by hand on the
-# grid each was drawn on. Disk Analyzer's is the GNOME Design Team's own app
+# Marks that live in the sprite but are not Simple Icons' to give. Remmina and
+# Disk Analyzer are simply not in the set, so their marks were added by hand on
+# the grid each was drawn on. Disk Analyzer's is the GNOME Design Team's own app
 # icon and is the one mark in the sprite that is not currentColor, because a
-# colour pie chart has no monochrome reading. All three sit above MARKER in the
+# colour pie chart has no monochrome reading. Both sit above MARKER in the
 # sprite, which is what keeps this script away from them -- the list is
 # documentation, not a filter.
-NOT_FROM_SIMPLE_ICONS = ["a-termhut", "a-remmina", "a-baobab"]
+#
+# `a-termhut` was a third, hand-drawn from term.hut's own site repository. It
+# went with the entry it drew, when the host-service kind was removed.
+NOT_FROM_SIMPLE_ICONS = ["a-remmina", "a-baobab"]
 
 # Some marks are a filled square with the shape knocked out of it, which at dock
 # size reads as a black block rather than an icon. The square goes and the shape
@@ -117,6 +113,10 @@ def splice(sprite: str, marks: list[str]) -> str:
     grown hand-authored symbols below the marks -- a-dockhand, the title bar
     switch, the layout mark -- and that rule quietly deleted them. An id this
     script does not name is left exactly where it was.
+
+    The same rule has one consequence worth knowing: dropping a line from ICONS
+    does not drop its symbol from the sprite, because an unowned id is kept.
+    Retiring a mark is two edits, here and in the file.
     """
     lines = sprite.splitlines()
     owned = tuple(f'<symbol id="{sid}"' for sid, _, _ in ICONS)

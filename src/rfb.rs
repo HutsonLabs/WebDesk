@@ -6,21 +6,24 @@
 //! works out which socket the person asking is entitled to, opens it, and then
 //! copies bytes until one of the two ends stops.
 //!
-//! **It is deliberately not `proxy.rs`.** Nearly everything that file does is
-//! about HTTP -- a request line to rewrite into origin form, a prefix to
-//! announce, hop-by-hop headers to drop, `Set-Cookie` pinned to a path so one
-//! app cannot read another's, `X-Frame-Options` taken away so the frame renders
-//! at all. None of it exists here. There is no request to forward, because RFB
-//! is not request/response and the server speaks first; no header to rewrite,
-//! because the far end has never heard of HTTP; and no cookie to pin, because
-//! nothing behind this socket knows a browser is involved. Take all of that
-//! away and what is left is a byte pump, so routing this through the proxy
-//! would mean carrying the whole of that machinery to reach the one call that
-//! opens a socket -- and inviting a later change to the proxy to arrive here
-//! without anyone meaning it to.
+//! **It was deliberately not the reverse proxy, and it outlived it.** WebDesk
+//! used to carry a `proxy.rs` that put an HTTP app on this origin under
+//! `/app/<slug>/`, and nearly everything that file did was about HTTP -- a
+//! request line to rewrite into origin form, a prefix to announce, hop-by-hop
+//! headers to drop, `Set-Cookie` pinned to a path so one app could not read
+//! another's, `X-Frame-Options` taken away so the frame rendered at all. None of
+//! it applied here. There is no request to forward, because RFB is not
+//! request/response and the server speaks first; no header to rewrite, because
+//! the far end has never heard of HTTP; and no cookie to pin, because nothing
+//! behind this socket knows a browser is involved. Take all of that away and
+//! what is left is a byte pump.
 //!
-//! What this file does have that the proxy does not is the rule in `ws_rfb`:
-//! the uid is taken from the session and never from the request.
+//! Routing this through the proxy would have meant carrying the whole of that
+//! machinery to reach the one call that opens a socket. Keeping them apart is
+//! why the proxy could be deleted without touching this file.
+//!
+//! The rule that is this file's own is in `ws_rfb`: the uid is taken from the
+//! session and never from the request.
 
 use crate::{catalog, session_of, AppState};
 use axum::extract::ws::{Message, WebSocket};
@@ -68,7 +71,7 @@ pub fn socket_dir(uid: u32) -> PathBuf {
 /// filter has to anticipate what an attacker will send, and this does not have
 /// to anticipate anything.
 fn streamed(slug: &str) -> Option<&'static catalog::App> {
-    catalog::find(slug).filter(|a| a.streamed.is_some())
+    catalog::find(slug)
 }
 
 /// Whether a failure to connect means "that application is not running".
@@ -357,24 +360,21 @@ mod tests {
         }
     }
 
-    /// Only an application drawn on this host has a socket here. The entry a
-    /// looser check gets wrong is `term-hut-host`: it is a Flatpak as well, so
-    /// anything asking "does this entry have a Flatpak in it" says yes, and the
-    /// browser then waits on a socket no unit will ever create.
+    /// A slug is either one of the `&'static str`s compiled into `CATALOG` or it
+    /// is refused, and nothing in between is cleaned up until it is safe. Every
+    /// shipping entry has a socket here; nothing else does, whatever it is
+    /// spelled like.
     #[test]
-    fn only_a_streamed_entry_is_served_here() {
+    fn only_a_catalog_entry_is_served_here() {
         for app in catalog::CATALOG {
-            assert_eq!(
-                streamed(app.slug).is_some(),
-                app.streamed.is_some(),
-                "{} is served by the wrong half of this daemon",
-                app.slug
-            );
+            assert!(streamed(app.slug).is_some(), "{} has no socket here", app.slug);
         }
-        // Named rather than derived, and safe to name: the catalog says this
-        // slug cannot move, because it is the key of the record in `apps.json`.
-        assert!(streamed("term-hut-host").is_none(), "a host service has no socket here");
         assert!(streamed("no-such-app").is_none());
+        // The shapes a path traversal arrives in. None of them is filtered; all
+        // of them simply fail to equal a slug.
+        for junk in ["../../etc/passwd", "gimp/../firefox", "", "GIMP"] {
+            assert!(streamed(junk).is_none(), "{junk} was served");
+        }
     }
 
     /// Refusing to call a permission error "not running". It cannot happen on a

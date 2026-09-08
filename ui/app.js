@@ -2371,18 +2371,17 @@ function openSystem() {
 
 /* --------------------------------------------------------------- apps ---*/
 
-/* Container applications. Almost every installed app is served from
-   /app/<slug>/ on this origin -- see src/proxy.rs for why that matters -- so
-   opening one is just an iframe in an ordinary window, and it arrives already
-   signed in. The exception is an app that cannot live under a path prefix at
-   all: the host hands back an absolute URL on a port of its own for that one
-   (see src/origin.rs), and the only difference here is that `url` is absolute.
-   It still arrives signed in, because cookies are not isolated by port.
-
-   And one kind is not served at all. A streamed entry is a Flatpak running on
+/* Applications drawn on this host. Every installed app is a Flatpak running on
    this machine as the signed-in user, under a compositor of its own, and what
-   arrives here is pixels over /ws/rfb/<slug> rather than a document. There is
-   no URL to frame and no prefix to negotiate; see streamApp.
+   arrives here is pixels over /ws/rfb/<slug> rather than a document -- see
+   streamApp.
+
+   There used to be a second shape here: apps WebDesk reverse-proxied at
+   /app/<slug>/ and showed in an iframe. That whole path is gone, along with the
+   frame, the prefix and the question of whether a given app tolerated being
+   served under one. What replaces it for an operator who wants a web app on the
+   desk is docs/url-apps.md, which is a URL they supply rather than a service
+   WebDesk runs.
 
    The dock is painted from what the host has installed rather than from
    anything compiled into this file, so a newly installed app appears without a
@@ -2395,16 +2394,15 @@ const appKey = (slug) => 'app:' + slug;
 
 /* Opening an app is a question put to the host, not a decision taken here.
 
-   Every kind goes through POST /api/apps/open, and what comes back says how to
-   show it: `frame` for a container or an adopted host service, `rfb` for a
-   streamed one. The client never guesses. It has a guess available -- the
-   catalog's `streamed` field is right there -- and using it would mean two
-   places that decide what an app is, which is one more than can be kept true.
+   POST /api/apps/open starts the caller's own session and answers with the
+   WebSocket to point a canvas at. There is one transport now and there used to
+   be two, which is why the answer is still read rather than assumed: the socket
+   in it is the host's to name.
 
-   What that field is used for is the shape of the window, and that is not
-   decoration. Nothing on the host can set a streamed app's resolution: cage's
-   output is created at a hardcoded 1280x720 and only a client asking for a
-   desktop size changes it. What gets asked for is the size of the element the
+   The catalog's `streamed` field is used for the shape of the window, and that
+   is not decoration. Nothing on the host can set a streamed app's resolution:
+   cage's output is created at a hardcoded 1280x720 and only a client asking for
+   a desktop size changes it. What gets asked for is the size of the element the
    canvas is in, which is this window's body -- so the entry's width and height
    are the resolution the application will run at, by way of the window they
    open. Hence the 35: the body is what has to come out at the entry's height,
@@ -2437,9 +2435,7 @@ function openApp(app) {
             // Closed while the host was still starting it. Whatever it started
             // is left alone: closing a window is not quitting an application.
             if (!openWindows.has(entry.id)) return;
-            drop = d.transport === 'rfb'
-              ? streamApp(entry, app, d, veil, go)
-              : frameApp(entry, app, d, veil);
+            drop = streamApp(entry, app, d, veil, go);
           })
           .catch((e) => veil.stop(
             `${app.name} did not open. ${e.message}`,
@@ -2496,49 +2492,6 @@ function makeVeil(host) {
    the only case, except that the URL now comes from the answer rather than
    from the catalog row: the host is the one that knows an app with an origin
    of its own is reached at an absolute URL, since no prefix would serve it. */
-function frameApp(entry, app, opened, veil) {
-  const url = opened.url || app.url;
-
-  const frame = document.createElement('iframe');
-  frame.className = 'appframe';
-  frame.src = url;
-  frame.setAttribute('title', app.name);
-  // Deliberately not sandboxed: a sandbox would take away the cookies and
-  // storage the app needs to hold its own login, while adding no protection
-  // we do not already have, since the host is what decides this app may be
-  // reached at all. An app on its own port is a different origin, so this
-  // frame cannot be scripted from here -- nothing tries to, and the button
-  // below is the way out when an app dislikes being framed.
-  entry.body.appendChild(frame);
-  veil.hide();
-
-  // Somewhere to go when an app turns out not to like being framed. Opening
-  // it in a tab still goes through WebDesk, so it is still the same session
-  // and still not exposed to the network.
-  const pop = document.createElement('button');
-  pop.type = 'button';
-  pop.className = 'win-btn tip';
-  pop.dataset.tip = 'Open in a tab';
-  pop.setAttribute('aria-label', 'Open in a tab');
-  pop.innerHTML = '<svg class="ic-a" aria-hidden="true"><use href="#a-external"></use></svg>';
-  onTap(pop, () => window.open(url, '_blank', 'noopener'));
-
-  const again = document.createElement('button');
-  again.type = 'button';
-  again.className = 'win-btn tip';
-  again.dataset.tip = 'Reload';
-  again.setAttribute('aria-label', 'Reload');
-  again.innerHTML = '<svg class="ic-a" aria-hidden="true"><use href="#a-refresh"></use></svg>';
-  onTap(again, () => { frame.src = url; });
-
-  entry.tools.append(again, pop);
-
-  return () => {
-    entry.tools.textContent = '';
-    frame.remove();
-  };
-}
-
 /* ------------------------------------------------------------- streamed ---*/
 
 let novnc = null;
@@ -2956,7 +2909,7 @@ async function loadInstalled() {
     installed = d.apps || [];
   } catch (_) {
     // A failure here must not take the dock with it: the built-in apps work
-    // whether or not this host has a container engine at all.
+    // whether or not this host can draw anything at all.
     installed = [];
   }
   paintInstalled();
@@ -3002,17 +2955,18 @@ function paintInstalled() {
 const andList = (xs) =>
   xs.length < 3 ? xs.join(' and ') : `${xs.slice(0, -1).join(', ')} and ${xs[xs.length - 1]}`;
 
+/* The six words a user unit's state arrives as, in the words a person reads.
+
+   They come from systemd::word_for, which is the only place that vocabulary is
+   decided, so a state missing here paints as a raw systemd token. `absent` is
+   the ordinary condition of an app nobody has opened rather than a fault --
+   there is no unit until an open creates one. */
 const APP_STATES = {
-  running: 'Running',
-  exited: 'Stopped',
-  created: 'Not started',
-  paused: 'Paused',
-  restarting: 'Restarting',
-  missing: 'Container missing',
-  // Only a host service reaches these two: a unit systemd has never heard of,
-  // and one that tried to start and did not.
-  absent: 'Service not installed',
-  failed: 'Failed',
+  running: 'Open',
+  exited: 'Not open',
+  absent: 'Not open',
+  restarting: 'Starting',
+  failed: 'Failed to start',
   unknown: 'Unknown',
 };
 
@@ -3053,7 +3007,7 @@ function openApps() {
       entry.body.appendChild(root);
 
       const $ = (n) => root.querySelector(`[data-el="${n}"]`);
-      let catalog = { apps: [], allowed: false, admin: false, engine: {} };
+      let catalog = { apps: [], allowed: false, admin: false };
       let deps = { deps: [], manager: null };
       let timer = null;
       let live = true;
@@ -3082,10 +3036,10 @@ function openApps() {
         name.textContent = app.name;
         const sub = document.createElement('div');
         sub.className = 'apps-sub';
-        // A host service has no image to name, so it names the unit instead --
-        // which is also the thing an operator would go and look at.
+        // The application id, which is the only part of an installed app that
+        // exists on disk and the thing an operator would go and look at.
         sub.textContent = isInstalled
-          ? `${APP_STATES[app.state] || app.state} · ${app.unit || app.image}`
+          ? `${APP_STATES[app.state] || app.state} · ${app.flatpak}`
           : app.tagline;
         text.append(name, sub);
         if (app.notes) {
@@ -3110,52 +3064,34 @@ function openApps() {
         };
 
         if (isInstalled) {
-          /* What kind of thing this is comes from the installed record, not
-             from the catalog entry beside it. The record is what this host
-             actually did; the catalog is what it could have done, and the two
-             can disagree -- an entry can change shape between the version that
-             installed an app and the version reading it back.
-
-             The catalog is still read, for one thing the record does not carry:
-             the size the entry wants to draw at, which is the size this window
-             opens at and therefore the resolution the app will run at. Missing
-             it costs an opening size, not a broken window. */
-          const streamed = app.transport === 'rfb';
-          const shape = catalog.apps.find((c) => c.slug === app.slug);
-          // A drawn app has nothing running until somebody opens it -- opening
-          // *is* what starts it -- so waiting for `running` here would be
-          // waiting for the thing this button does.
-          if (app.state === 'running' || streamed) {
-            button('Open', 'Open in a window', () =>
-              activateApp(
-                appKey(app.slug),
-                () => openApp({ ...app, streamed: streamed && shape ? shape.streamed : null }),
-                false,
-              ));
-          }
-          if (catalog.admin) {
-            /* Start and Stop are the engine's verbs and a drawn app has no
-               container to apply them to. Its session belongs to whoever opened
-               it, is started by opening and ended by Quit in its own window, and
-               is not a thing an administrator stops on somebody else's behalf
-               from here. The server refuses both with a sentence saying so;
-               offering the buttons anyway would only be a way to read it. */
-            if (!streamed) {
-              if (app.state === 'running') button('Stop', '', () => act('stop', app));
-              else button('Start', '', () => act('start', app));
-            }
-            button('Remove', '', () => removeApp(app), 'danger');
-          }
+          /* Opened straight from the row this list was painted from, and not
+             from a catalog entry looked up beside it. /api/apps/list already
+             carries the entry's `streamed` shape -- which is the window's first
+             size, and therefore the resolution the app will run at -- so a
+             second lookup here would be a second place for the two to disagree.
+             An app whose entry has gone away in a later build has no shape in
+             either, and costs an opening size rather than a broken window. */
+          // Always offered. There is nothing running until somebody opens it --
+          // opening *is* what starts it -- so waiting for `running` here would
+          // be waiting for the thing this button does.
+          button('Open', 'Open in a window', () =>
+            activateApp(appKey(app.slug), () => openApp(app), false));
+          /* No Start and no Stop, and there used to be both. They were the
+             container engine's verbs, and an app that runs once per person has
+             nothing host-wide to apply them to: its session belongs to whoever
+             opened it, is started by opening and ended by Quit in its own
+             window. An administrator does not stop it on somebody else's behalf
+             from here, and the server has no route that would. */
+          if (catalog.admin) button('Remove', '', () => removeApp(app), 'danger');
         } else {
           const b = button('Install', '', () => install(app));
           /* Who you are is the only thing that decides this here.
 
-             Whether this host has what the entry needs -- an engine, a
-             compositor, an RFB server, flatpak -- is decided by the install
-             itself, which refuses with the list of what is missing and offers
-             to install it. Greying the button out on that instead would hide
-             the one offer that fixes the problem behind a control nobody can
-             press, and it would hide it at the exact moment somebody wanted
+             Whether this host has what the entry needs -- a compositor, an RFB
+             server, flatpak -- is decided by the install itself, which refuses
+             with the list of what is missing and offers to install it. Greying
+             the button out on that instead would hide the one offer that fixes
+             the problem behind a control nobody can press, and it would hide it at the exact moment somebody wanted
              it. An entry this host is not ready for stays visible, stays
              pressable, and answers with what to do about it. */
           b.disabled = !catalog.admin;
@@ -3178,14 +3114,12 @@ function openApps() {
         const say = $('depsay');
         const acts = $('depsact');
         /* Only what WebDesk would actually put on this host. A row that is
-           absent and not offered is not a gap somebody can close from here --
-           podman is the one, and listing it would put a button in front of a
-           decision the server has already declined to make. */
+           absent and not offered is not a gap somebody can close from here, and
+           listing it would put a button in front of a decision the server has
+           already declined to make. */
         const missing = (deps.deps || []).filter((d) => !d.present && d.offered);
-        const engine = deps.engine || {};
-        const spare = !!engine.podman_spare;
 
-        group.hidden = !missing.length && !spare;
+        group.hidden = !missing.length;
         list.textContent = '';
         say.textContent = '';
         acts.textContent = '';
@@ -3215,48 +3149,6 @@ function openApps() {
           list.appendChild(el);
         }
 
-        /* The spare-engine decision, which is not a missing dependency and does
-           not belong in the list above it. It only exists in one arrangement --
-           both engines installed and podman no longer the one doing the work --
-           and the server says when that is true rather than the window working
-           it out from two booleans and getting it wrong on the day
-           WD_CONTAINER_ENGINE is set. */
-        if (spare) {
-          const el = document.createElement('div');
-          el.className = 'apps-row';
-          const text = document.createElement('div');
-          text.className = 'apps-text';
-          const name = document.createElement('div');
-          name.className = 'apps-name';
-          name.textContent = 'Podman';
-          const sub = document.createElement('div');
-          sub.className = 'apps-sub';
-          sub.textContent =
-            'Installed, and no longer used — WebDesk is running containers with Docker. ' +
-            'You can leave it where it is.';
-          const note = document.createElement('div');
-          note.className = 'apps-note';
-          const rm = engine.removal || {};
-          note.textContent = rm.allowed
-            ? `Removing it runs: ${rm.command}`
-            : rm.reason || 'It cannot be removed from here.';
-          text.append(name, sub, note);
-          el.appendChild(text);
-          if (catalog.admin) {
-            const b = document.createElement('button');
-            b.type = 'button';
-            b.className = 'fbtn danger';
-            b.textContent = 'Remove podman';
-            /* Disabled rather than hidden when the server has refused. The
-               reason is the sentence directly above it, and a button that has
-               visibly gone grey is what makes somebody read it -- a button that
-               is simply absent reads as a feature that does not exist. */
-            b.disabled = !rm.allowed;
-            onTap(b, () => removePodman(rm));
-            el.appendChild(b);
-          }
-          list.appendChild(el);
-        }
         if (!missing.length) return;
 
         const named = missing.filter((d) => d.package);
@@ -3297,43 +3189,6 @@ function openApps() {
         b.textContent = `Install ${andList(named.map((d) => d.label))}`;
         onTap(b, () => installDeps(named.map((d) => d.key)));
         acts.appendChild(b);
-      }
-
-      /* Taking a package off a host, which is the one thing in this window that
-         cannot be undone by pressing something else.
-
-         The server checks everything again when this arrives, and that is not
-         belt and braces -- this panel was painted at some point in the past and
-         a container can have been started since by somebody who is not looking
-         at this screen. So a refusal here is an ordinary outcome rather than a
-         bug, and it is shown as the answer to the question rather than as an
-         error about the request. */
-      async function removePodman(rm) {
-        const answer = await openModal({
-          title: 'Remove podman?',
-          message:
-            `This runs \`${rm.command}\` on this host. ` +
-            (rm.warning || '') +
-            ' WebDesk did not install podman, and nothing here can put it back.',
-          confirmLabel: 'Remove podman',
-          danger: true,
-        });
-        if (!answer) return;
-        try {
-          const r = await jsonPost('/api/deps/podman/remove', { confirm: true });
-          deps.engine = r.engine || deps.engine;
-          toast('podman removed.');
-        } catch (e) {
-          /* The interesting failure is the one where the machine changed under
-             us: a container appeared between painting and pressing. The server
-             sends the whole verdict back, so show its sentence rather than a
-             generic failure, and repaint so the button matches the new answer. */
-          toast(e && e.message ? e.message : 'podman could not be removed.', 'bad');
-        }
-        try {
-          deps = await api('/api/deps');
-        } catch (_) { /* leave what we have; the next Refresh will correct it */ }
-        renderDeps();
       }
 
       /* One press, and then the log the Apps window is already watching.
@@ -3388,33 +3243,22 @@ function openApps() {
         }
         for (const a of offered) store.appendChild(row(a, false));
 
-        const eng = catalog.engine || {};
-        // Not being allowed to install comes first, because it is the one that
-        // explains every disabled button on the screen. A missing engine below
-        // it explains some of them, and only to somebody who could have acted.
-        if (!catalog.admin) {
-          note(
-            `Installing apps requires membership of ${(catalog.admin_groups || []).join(' or ')}. ` +
-            'You can open anything already installed.',
-          );
-        } else if (eng.error) {
-          // Not everything in the store needs the engine, and more of the store
-          // does not need it than used to. Saying only that it is missing reads
-          // as "nothing can be installed", when the entries that run on the
-          // host -- the adopted services, and everything drawn under a
-          // compositor -- are installable on exactly this machine.
-          const onHost = offered.filter((a) => a.host || a.streamed).map((a) => a.name);
-          note(
-            onHost.length
-              ? `${eng.error}. ${andList(onHost)} ` +
-                `${onHost.length > 1 ? 'run' : 'runs'} on the host and can still be installed.`
-              : eng.error,
-            'bad',
-          );
-        } else {
-          note('');
-        }
-        $('state').textContent = eng.name ? `Engine: ${eng.name}` : '';
+        // The one thing left that explains a disabled button on this screen.
+        // What the *host* is missing has its own panel at the top, with the
+        // button that fixes it, so it is not repeated here.
+        note(
+          catalog.admin
+            ? ''
+            : `Installing apps requires membership of ${(catalog.admin_groups || []).join(' or ')}. ` +
+              'You can open anything already installed.',
+        );
+
+        /* Cleared here, and this is the only place that clears it. `tick`
+           writes the phase of a running install into it and a render only ever
+           follows one landing, so leaving it would pin "Downloading GIMP…"
+           beside a GIMP that finished installing. It used to be overwritten
+           with the container engine's name, which cleared it by accident. */
+        $('state').textContent = '';
       }
 
       async function refresh() {
@@ -3435,45 +3279,24 @@ function openApps() {
         if (live) render();
       }
 
-      async function act(what, app) {
-        try {
-          await jsonPost(`/api/apps/${what}`, { slug: app.slug });
-          toast(`${app.name} ${what === 'start' ? 'started' : 'stopped'}.`);
-        } catch (e) {
-          toast(e.message, 'bad');
-        }
-        await refresh();
-      }
-
       async function removeApp(app) {
-        // One dialog, not two: whether the data goes is part of the same
-        // decision, and asking it separately reads as a second chance to
-        // cancel rather than as a choice.
-        const answer = await openModal({
-          title: `Remove ${app.name}?`,
-          // A drawn app has no container to delete and the sentence has to say
-          // so, because what it does have -- an application installed on the
-          // host -- is a bigger thing to be vague about.
-          message: app.transport === 'rfb'
-            ? 'Its session stops and WebDesk lets it go. Its data is kept unless you say otherwise.'
-            : 'The container is deleted. Its data is kept unless you say otherwise.',
-          fields: [{
-            key: 'purge',
-            kind: 'toggle',
-            label: 'Delete its data too',
-            help: `Deletes ${app.name}'s configuration and state on this host. There is no undo.`,
-            default: 'false',
-          }],
-          confirmLabel: 'Remove',
-          danger: true,
-        });
-        if (!answer) return;
-        const purge = answer.purge === 'true';
+        /* No "delete its data too" here, and there used to be one. A container
+           kept its state in a directory WebDesk made and could therefore
+           delete. This app keeps its state in ~/.var/app/<id>, in every user's
+           own home -- so there is no one directory to offer, and deleting
+           somebody's documents because an administrator took a tile out of a
+           dock is not on offer at any level of consent. */
+        const ok = await askConfirm(
+          `Remove ${app.name}?`,
+          'Its session stops and WebDesk lets it go. Your files stay where they are, ' +
+          'in your home directory.',
+          'Remove',
+        );
+        if (!ok) return;
 
         const send = (acceptUninstall) =>
           jsonPost('/api/apps/remove', {
             slug: app.slug,
-            purge,
             accept_uninstall: acceptUninstall,
           });
 
@@ -3513,11 +3336,10 @@ function openApps() {
           }
         }
         if (done) {
-          // The host says what it actually did, and that is more than this
-          // side can work out: whether the data went, and whether the
-          // application itself went with it.
-          toast(done.note ||
-            (done.purged ? `${app.name} and its data removed.` : `${app.name} removed.`));
+          // The host says what it actually did, and that is more than this side
+          // can work out: whether the application itself went with the tile, or
+          // was one this machine already had and has been left alone.
+          toast(done.note || `${app.name} removed.`);
         }
         // Close any window still showing the app that has just gone.
         for (const [id, w] of [...openWindows]) {
@@ -3526,52 +3348,43 @@ function openApps() {
         await refresh();
       }
 
+      /* There is no form, and there used to be one.
+
+         Every question a container entry asked had one obviously right answer
+         for an application running on this host as this user: the clock is the
+         host's, the identity is yours, the files are already yours. So this is
+         a confirmation rather than a dialog to fill in -- the one fact worth
+         saying before several hundred megabytes are fetched is that the install
+         is host-wide and the running is not. */
       async function install(app) {
-        const answers = await openModal({
-          title: `Install ${app.name}`,
-          message: app.tagline,
-          fields: app.params,
-          note: app.host
-            ? `This one runs on the host, not in a container. If ${app.host.unit} is ` +
-              'already here it is adopted exactly as it is; otherwise WebDesk installs the ' +
-              'application and writes that unit, bound to loopback and running as you.'
-            : app.streamed
-              ? 'This one is not a container. It is installed on the host with flatpak, ' +
-                'once for the whole machine, and runs as you when you open it.'
-              : 'WebDesk chooses the container name, its port and where its data lives. ' +
-                'It is published on this host only and reached through WebDesk.',
-          confirmLabel: 'Install',
-        });
-        if (!answers) return;
-        await attempt(app, answers, false);
+        const ok = await askConfirm(
+          `Install ${app.name}?`,
+          `${app.tagline}\n\nIt is installed on this host with flatpak, once for the whole ` +
+          'machine, and runs as you when you open it.',
+          'Install',
+          false,
+        );
+        if (!ok) return;
+        await attempt(app);
       }
 
-      /* Sending the install, and answering the two refusals that are answerable.
+      /* Sending the install, and answering the refusal that is answerable.
 
-         Separate from the form above so that it can be run a second time with
-         the answers already in hand. A refusal that has been dealt with -- a
-         package accepted, a dependency installed -- has to end in the install
-         actually happening, and asking somebody to fill the form in again to
-         find out whether their consent worked is asking them to lose their
-         place in their own decision. */
-      async function attempt(app, answers, acceptPackages) {
-        const send = (accept) =>
-          jsonPost('/api/apps/install', {
-            slug: app.slug,
-            params: answers,
-            tag: 'latest',
-            accept_packages: accept,
-          });
-
+         Separate from the confirmation above so it can be run a second time
+         after a dependency has been installed. A refusal that has been dealt
+         with has to end in the install actually happening, rather than in
+         somebody being sent back to press the same button again to find out
+         whether their consent worked. */
+      async function attempt(app) {
         try {
-          await send(acceptPackages);
+          await jsonPost('/api/apps/install', { slug: app.slug });
         } catch (e) {
-          // Some refusals are answerable, and both kinds arrive the same way:
-          // a 409 carrying `offer`, which names exactly what would be done and
-          // is put to the person who asked rather than being a dead end they
-          // have to go and read documentation about. Declining stops here.
+          // An answerable refusal arrives as a 409 carrying `offer`, which
+          // names exactly what would be done and is put to the person who asked
+          // rather than being a dead end they have to go and read documentation
+          // about. Declining stops here.
           const offer = e.body && e.body.offer;
-          if (!offer) {
+          if (!offer || !offer.deps) {
             // The rest refuse with what to do about it, which is a paragraph
             // and not a line -- too much for a toast that leaves.
             note(e.message, 'bad');
@@ -3579,8 +3392,8 @@ function openApps() {
             return;
           }
 
-          /* The host has not got what this entry needs to run at all -- an
-             engine, a compositor, an RFB server, flatpak itself.
+          /* The host has not got what this entry needs to run at all -- a
+             compositor, an RFB server, or flatpak itself.
 
              This is the moment to offer that, and the reason the Apps window
              does not disable the button instead. Somebody pressing Install has
@@ -3590,42 +3403,21 @@ function openApps() {
              is the thing they have already scrolled past. The keys in the
              offer are the same keys /api/deps/install takes, so the fix is the
              one already written below. */
-          if (offer.deps) {
-            const labels = offer.deps.map((d) => d.label);
-            const ok = await askConfirm(
-              `Install ${andList(labels)} first?`,
-              `${e.message}\n\n${offer.detail}`,
-              `Install ${andList(labels)}`,
-              false,
-            );
-            if (!ok) {
-              note(`${app.name} was not installed. ${offer.detail}`, 'bad');
-              return;
-            }
-            // And then carry on with the app that wanted them, without asking
-            // for the same answers twice.
-            installDeps(offer.deps.map((d) => d.key),
-                        () => attempt(app, answers, acceptPackages));
-            return;
-          }
-
+          const labels = offer.deps.map((d) => d.label);
           const ok = await askConfirm(
-            `Install ${andList(offer.packages)}?`,
+            `Install ${andList(labels)} first?`,
             `${e.message}\n\n${offer.detail}`,
-            `Install with ${offer.manager}`,
+            `Install ${andList(labels)}`,
             false,
           );
           if (!ok) {
             note(`${app.name} was not installed. ${offer.detail}`, 'bad');
             return;
           }
-          try {
-            await send(true);
-          } catch (e2) {
-            note(e2.message, 'bad');
-            toast(`${app.name} was not installed.`, 'bad');
-            return;
-          }
+          // And then carry on with the app that wanted them, rather than
+          // leaving somebody to press Install a second time.
+          installDeps(offer.deps.map((d) => d.key), () => attempt(app));
+          return;
         }
         $('log').hidden = false;
         poll();
@@ -3659,16 +3451,14 @@ function openApps() {
           return;
         }
         if (st.state === 'running') {
-          // A host service takes a different road to the same place, and a
-          // three-minute download under the word "Creating" reads as a hang.
+          // A several-hundred-megabyte download reported as "Working" reads as
+          // a hang, so the phase the host is in gets its own sentence.
           const PHASES = {
-            pulling: (n) => `Downloading ${n}…`,
-            packages: () => 'Installing what it needs…',
             downloading: (n) => `Downloading ${n}…`,
-            unit: () => 'Writing its service…',
-            starting: (n) => `Starting ${n}…`,
+            packages: () => 'Installing what it needs…',
+            recording: (n) => `Recording ${n}…`,
           };
-          const phrase = PHASES[st.phase] || ((n) => `Creating ${n}…`);
+          const phrase = PHASES[st.phase] || ((n) => `Installing ${n}…`);
           // A dependency install comes through here too, and it is packages
           // rather than an application, so it may have no name to put in a
           // sentence. Saying "Working…" is better than saying "undefined".
@@ -3915,7 +3705,7 @@ async function signOut() {
     showDesktop();
     openFiles(STATE.home);
     // Not awaited: the dock fills in as soon as the host answers, and a host
-    // with no container engine simply never adds anything.
+    // with nothing installed simply never adds anything.
     loadInstalled();
   } catch (_) {
     showLogin();

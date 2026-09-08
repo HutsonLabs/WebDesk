@@ -3,24 +3,22 @@ mod auth;
 mod catalog;
 mod cockpit;
 mod deps;
-mod engine;
 mod flatpak;
 mod helper;
 mod proto;
-mod origin;
-mod proxy;
 mod rfb;
 mod session;
 mod systemd;
 mod pty;
 mod tls;
 mod update;
+mod which;
 
 use axum::body::Bytes;
 use axum::extract::{Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{any, get, post, put};
+use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use helper::Helper;
 use proto::Request as HReq;
@@ -63,17 +61,11 @@ pub struct AppState {
     /// speaks plaintext, and an extra listener has to match what this process
     /// does rather than what is true at the far end.
     tls_on: bool,
-    /// Listeners serving a single app at the root of a port of its own. Empty
-    /// unless something in the catalog sets `needs_origin`. See `origin.rs`.
-    origins: origin::Origins,
 }
 
 impl AppState {
     pub fn tls_on(&self) -> bool {
         self.tls_on
-    }
-    pub fn origins(&self) -> &origin::Origins {
-        &self.origins
     }
 }
 
@@ -128,13 +120,7 @@ async fn serve() -> Result<(), Box<dyn std::error::Error>> {
         sessions: Arc::new(Mutex::new(HashMap::new())),
         secure,
         tls_on,
-        origins: Default::default(),
     };
-
-    // Anything already installed that wants a port of its own gets it back
-    // before the main listener opens, so a restart does not leave one of them
-    // unreachable while the desk looks healthy.
-    origin::start_installed(&state).await;
 
     let app = Router::new()
         .route("/api/login", post(login))
@@ -155,11 +141,12 @@ async fn serve() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/apps/list", get(apps::list))
         .route("/api/apps/status", get(apps::status))
         .route("/api/apps/install", post(apps::install))
-        .route("/api/apps/start", post(apps::start))
-        .route("/api/apps/stop", post(apps::stop))
         .route("/api/apps/remove", post(apps::remove))
-        // Opening is not installing: anyone signed in may do it, and for a
-        // streamed entry it starts a session that is theirs alone.
+        // There is no host-wide start or stop, and there used to be. An app is
+        // installed once for the machine and *run* once per person, so there is
+        // no single process an administrator could put into either state on
+        // everybody's behalf. Open and Close are what move it, and they are per
+        // person -- which is also why anyone signed in may use them.
         .route("/api/apps/open", post(apps::open))
         .route("/api/apps/close", post(apps::close))
         // The size of a drawn app's output. Out of band because the stream
@@ -169,10 +156,6 @@ async fn serve() -> Result<(), Box<dyn std::error::Error>> {
         // that fixes it.
         .route("/api/deps", get(deps::deps_report))
         .route("/api/deps/install", post(deps::deps_install))
-        // The only route that takes a package off a host. One package, named in
-        // the build rather than in the request -- see `deps::deps_remove_podman`
-        // for the refusals that stand in front of it.
-        .route("/api/deps/podman/remove", post(deps::deps_remove_podman))
         // The host panels. `cockpit-bridge` is behind these and is never
         // reachable from the browser itself -- see `cockpit.rs`.
         .route("/api/host/services", get(cockpit::host_services))
@@ -182,12 +165,6 @@ async fn serve() -> Result<(), Box<dyn std::error::Error>> {
         // The pixels of a streamed app. Not a proxy route: there is no HTTP on
         // the other side of this, only RFB on a unix socket.
         .route("/ws/rfb/{slug}", get(rfb::ws_rfb))
-        // Container apps, on this origin so they can share the session and sit
-        // in an iframe. `any` rather than `get`: an app behind here serves the
-        // whole method surface, uploads and websockets included.
-        .route("/app/{slug}", any(proxy::handle_root))
-        .route("/app/{slug}/", any(proxy::handle_index))
-        .route("/app/{slug}/{*rest}", any(proxy::handle))
         .fallback(get(static_asset))
         .with_state(state);
 

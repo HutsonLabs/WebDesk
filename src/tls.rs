@@ -11,9 +11,8 @@
 //! costs the browser's interstitial once per host. Point `WD_TLS_CERT` and
 //! `WD_TLS_KEY` at a real pair and the warning goes away.
 //!
-//! rustls, not OpenSSL, and `ring`, not aws-lc-rs -- the same reasoning as the
-//! proxy's client side in `proxy.rs`: this program has to build on a stock host
-//! with nothing beyond gcc, so no OpenSSL headers and no cmake.
+//! rustls, not OpenSSL, and `ring`, not aws-lc-rs: this program has to build on
+//! a stock host with nothing beyond gcc, so no OpenSSL headers and no cmake.
 
 use std::io;
 use std::net::SocketAddr;
@@ -428,6 +427,79 @@ mod tests {
         assert!(pem_blocks(&doubled).iter().all(|(l, _)| l == "CERTIFICATE"));
     }
 
+    /// A TLS client that verifies nothing, for connecting to the listener under
+    /// test.
+    ///
+    /// The certificate `serving` hands out is the one `self_signed` just made,
+    /// so there is no authority to check it against and no name to match it to
+    /// -- verifying it would mean generating a CA in the test in order to
+    /// distrust it a line later. What is under test here is that the handshake
+    /// completes and bytes cross it, not that rustls validates a chain.
+    ///
+    /// This used to be `proxy::dial`, borrowed from the code that spoke TLS to a
+    /// container's loopback port. There are no container ports any more, so the
+    /// only caller left is this file's own tests and it lives here now.
+    async fn dial(port: u16) -> std::io::Result<tokio_rustls::client::TlsStream<TcpStream>> {
+        use tokio_rustls::rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified};
+        use tokio_rustls::rustls::{ClientConfig, DigitallySignedStruct, SignatureScheme};
+
+        #[derive(Debug)]
+        struct AnyCert;
+
+        impl tokio_rustls::rustls::client::danger::ServerCertVerifier for AnyCert {
+            fn verify_server_cert(
+                &self,
+                _: &CertificateDer<'_>,
+                _: &[CertificateDer<'_>],
+                _: &tokio_rustls::rustls::pki_types::ServerName<'_>,
+                _: &[u8],
+                _: tokio_rustls::rustls::pki_types::UnixTime,
+            ) -> Result<ServerCertVerified, tokio_rustls::rustls::Error> {
+                Ok(ServerCertVerified::assertion())
+            }
+            fn verify_tls12_signature(
+                &self,
+                _: &[u8],
+                _: &CertificateDer<'_>,
+                _: &DigitallySignedStruct,
+            ) -> Result<HandshakeSignatureValid, tokio_rustls::rustls::Error> {
+                Ok(HandshakeSignatureValid::assertion())
+            }
+            fn verify_tls13_signature(
+                &self,
+                _: &[u8],
+                _: &CertificateDer<'_>,
+                _: &DigitallySignedStruct,
+            ) -> Result<HandshakeSignatureValid, tokio_rustls::rustls::Error> {
+                Ok(HandshakeSignatureValid::assertion())
+            }
+            fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+                // Everything ring implements; the verifier accepts them all anyway.
+                vec![
+                    SignatureScheme::RSA_PKCS1_SHA256,
+                    SignatureScheme::RSA_PKCS1_SHA384,
+                    SignatureScheme::RSA_PKCS1_SHA512,
+                    SignatureScheme::ECDSA_NISTP256_SHA256,
+                    SignatureScheme::ECDSA_NISTP384_SHA384,
+                    SignatureScheme::RSA_PSS_SHA256,
+                    SignatureScheme::RSA_PSS_SHA384,
+                    SignatureScheme::RSA_PSS_SHA512,
+                    SignatureScheme::ED25519,
+                ]
+            }
+        }
+
+        let tcp = TcpStream::connect(("127.0.0.1", port)).await?;
+        let config = ClientConfig::builder()
+            .dangerous()
+            .with_custom_certificate_verifier(std::sync::Arc::new(AnyCert))
+            .with_no_client_auth();
+        let name = tokio_rustls::rustls::pki_types::ServerName::IpAddress(
+            std::net::Ipv4Addr::LOCALHOST.into(),
+        );
+        tokio_rustls::TlsConnector::from(std::sync::Arc::new(config)).connect(name, tcp).await
+    }
+
     /// The real listener, on a throwaway certificate, serving one route.
     /// Returns the port it ended up on.
     async fn serving() -> u16 {
@@ -442,9 +514,7 @@ mod tests {
     #[tokio::test]
     async fn a_request_over_tls_is_answered() {
         let port = serving().await;
-        // The same unverifying dial the proxy uses for a container app: the
-        // certificate here is self-signed too, and nothing could verify it.
-        let mut c = crate::proxy::dial(port, true).await.expect("handshake failed");
+        let mut c = dial(port).await.expect("handshake failed");
         c.write_all(b"GET / HTTP/1.1\r\nHost: desk.example\r\nConnection: close\r\n\r\n")
             .await
             .unwrap();
@@ -479,7 +549,7 @@ mod tests {
         let port = serving().await;
         let _silent = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
 
-        let mut c = tokio::time::timeout(Duration::from_secs(10), crate::proxy::dial(port, true))
+        let mut c = tokio::time::timeout(Duration::from_secs(10), dial(port))
             .await
             .expect("a silent client blocked the listener")
             .expect("handshake failed");
