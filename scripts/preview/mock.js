@@ -33,13 +33,9 @@ const SCENES = {
   'files-empty': { label: 'Files — empty folder', signedIn: true, open: ['files'], emptyDir: true },
   'dialog-rename': { label: 'Dialog — rename', signedIn: true, open: ['files'], dialog: 'rename' },
   'dialog-delete': { label: 'Dialog — delete', signedIn: true, open: ['files'], dialog: 'delete' },
-  apps: { label: 'Apps', signedIn: true, open: ['apps'] },
-  'apps-empty': { label: 'Apps — nothing installed', signedIn: true, open: ['apps'], apps: 'none' },
-  // The panel at the top of the Apps window, which only appears on a host that
-  // is missing something. It is the reason half the Install buttons would fail,
-  // so it is worth a scene of its own rather than a hand-edit.
-  'apps-deps': { label: 'Apps — host is missing things', signedIn: true, open: ['apps'], deps: 'missing' },
-  'apps-failed': { label: 'Apps — install failed', signedIn: true, open: ['apps'], install: 'fails' },
+  links: { label: 'Links', signedIn: true, open: ['links'] },
+  'links-empty': { label: 'Links — none yet', signedIn: true, open: ['links'], links: 'none' },
+  'links-guest': { label: 'Links — not an admin', signedIn: true, open: ['links'], admin: false },
 };
 
 const params = new URLSearchParams(location.search);
@@ -296,221 +292,79 @@ function updateCheck() {
   });
 }
 
-/* ----------------------------------------------------------------- apps */
+/* ---------------------------------------------------------------- links */
 
-/* A representative slice of the catalog rather than all of it: enough entries
-   to fill the Installed and Available lists and the dock. Keeping a second full
-   copy of src/catalog.rs in step would be a chore with no payoff.
+/* A link is a name, a URL and an icon: an application this desk points at
+   rather than one it runs. There is nothing in src/ for this file to drift from
+   any more -- the catalog it used to be checked against is gone, and what a
+   link says is whatever somebody typed. So these are simply four plausible
+   ones, chosen to cover the states the window and the dock can be in.
 
-   Which entries appear is still chosen here, but what they say is not: every
-   field below that src/catalog.rs also names is overwritten from it at load
-   (see "keeping up with the source"), so the strings in this literal are a
-   fallback for when the Rust cannot be read, not a second opinion.
-
-   There are no params, and there is no install form. Every question a container
-   entry used to ask had one obviously right answer for an application running
-   on this host as this user, so installing is a confirmation and nothing
-   else. */
-
-const APP_NOTE =
-  'Runs on this host as you, with your home directory, your fonts and your GPU, ' +
-  'and is drawn into this window. Its files are your files.';
-
-const APP_CATALOG = [
+   Note which is which: two open framed and one opens in a tab, and one of the
+   framed ones is on http://localhost, which is the case the mixed-content rule
+   lets through and every other http:// address fails. */
+let LINKS = scene.links === 'none' ? [] : [
   {
-    slug: 'firefox', name: 'Firefox', icon: 'a-firefox',
-    tagline: 'The browser, running on this host rather than on your machine.',
-    notes: APP_NOTE,
-    streamed: { flatpak: 'org.mozilla.firefox', width: 1600, height: 1000 },
+    id: 'k3f9q2', name: 'Jellyfin', url: 'http://localhost:8096/', icon: 'a-box',
+    open: 'frame', width: 1400, height: 900, added: NOW - 30 * 24 * HOUR,
+    actor: 'hutson', scope: 'host', editable: USER.admin,
   },
   {
-    slug: 'inkscape', name: 'Inkscape', icon: 'a-inkscape',
-    tagline: 'Vector drawing, for the SVGs this desktop is drawn with.',
-    notes: APP_NOTE,
-    streamed: { flatpak: 'org.inkscape.Inkscape', width: 1600, height: 1000 },
+    id: 'm7t2wx', name: 'Grafana', url: 'https://grafana.internal.example/', icon: 'a-layout',
+    open: 'frame', width: 1600, height: 1000, added: NOW - 9 * 24 * HOUR,
+    actor: 'hutson', scope: 'host', editable: USER.admin,
   },
   {
-    slug: 'baobab', name: 'Disk Analyzer', icon: 'a-baobab',
-    tagline: 'Where the disk went, as a picture rather than a column of numbers.',
-    notes: APP_NOTE,
-    streamed: { flatpak: 'org.gnome.baobab', width: 1100, height: 750 },
+    id: 'p4n8rc', name: 'Gmail', url: 'https://mail.google.com/', icon: 'a-globe',
+    open: 'tab', width: 1200, height: 800, added: NOW - 2 * 24 * HOUR,
+    actor: USER.username, scope: 'me', editable: true,
   },
   {
-    slug: 'gimp', name: 'GIMP', icon: 'a-gimp',
-    tagline: 'Photo and image editing, on the machine the images are already on.',
-    notes: APP_NOTE,
-    streamed: { flatpak: 'org.gimp.GIMP', width: 1600, height: 1000 },
+    id: 'z9k5vd', name: 'Router', url: 'http://192.168.1.1/', icon: 'a-globe',
+    open: 'tab', width: 1200, height: 800, added: NOW - 4 * HOUR,
+    actor: USER.username, scope: 'me', editable: true,
   },
 ];
 
-/* Starts with one open and one not, so the dock and both state words in the
-   Installed list are reachable without installing anything first. `absent` is
-   the ordinary condition of an app nobody has opened -- there is no user unit
-   until an open creates one -- and it reads as "Not open" rather than as a
-   fault. */
-let APPS_INSTALLED = scene.apps === 'none' ? [] : [
-  {
-    slug: 'firefox', name: 'Firefox', icon: 'a-firefox', state: 'running',
-    tagline: 'The browser, running on this host rather than on your machine.',
-    flatpak: 'org.mozilla.firefox', ws: '/ws/rfb/firefox',
-    streamed: { flatpak: 'org.mozilla.firefox', width: 1600, height: 1000 },
-    installed: NOW - 4 * HOUR, actor: 'hutson', notes: '',
-  },
-  {
-    slug: 'inkscape', name: 'Inkscape', icon: 'a-inkscape', state: 'absent',
-    tagline: 'Vector drawing, for the SVGs this desktop is drawn with.',
-    flatpak: 'org.inkscape.Inkscape', ws: '/ws/rfb/inkscape',
-    streamed: { flatpak: 'org.inkscape.Inkscape', width: 1600, height: 1000 },
-    installed: NOW - 26 * HOUR, actor: 'hutson', notes: '',
-  },
+/* The marks a link may name. The same list src/links.rs allows, and it is a
+   list rather than "any id in the sprite" for the reason that file gives: an id
+   the sprite has not got draws an empty square, silently, in somebody's dock. */
+const LINK_ICONS = [
+  'a-globe', 'a-box', 'a-apps', 'a-terminal', 'a-files', 'a-home', 'a-user',
+  'a-layout', 'a-external', 'a-refresh',
 ];
 
-/* ------------------------------------------------- keeping up with the source */
-
-/* The two lists above are a slice of src/catalog.rs, and a slice drifts. An
-   entry gets a new icon or a new name in the Rust, this copy keeps the old
-   one, and the preview draws something the app itself never draws -- a bug in
-   nothing but the preview, wearing the costume of a bug in the UI.
-   scripts/preview.py reads the real entries out of the Rust and leaves them in
-   window.PREVIEW_CATALOG, which is what lets that be fixed here instead of
-   noticed months later.
-
-   Corrected rather than merely reported: a preview that knows it is drawing
-   the wrong icon and draws it anyway is worth less than one that draws the
-   right one. What cannot be corrected -- a slug the catalog no longer has, an
-   icon no sprite defines -- is said out loud, in the same spirit as the
-   server's 501 for a route nobody mocked.
-
-   The window sizes stay hand-written. They are the part preview.py does not
-   read -- two integers rather than strings -- and they decide the size a
-   streamed window opens at, which is the one thing about an entry that a
-   preview is the right place to look at. */
-
-const PREVIEW_DRIFT = [];
-
-function reconcile(entries, fields, where) {
-  const truth = window.PREVIEW_CATALOG || {};
-  for (const entry of entries) {
-    const real = truth[entry.slug];
-    if (!real) {
-      PREVIEW_DRIFT.push(`${where} "${entry.slug}" is no longer in src/catalog.rs`);
-      continue;
-    }
-    for (const field of fields) {
-      if (!(field in real) || real[field] === entry[field]) continue;
-      PREVIEW_DRIFT.push(
-        `${where} "${entry.slug}" ${field}: had ${JSON.stringify(entry[field])}, ` +
-        `catalog.rs says ${JSON.stringify(real[field])} — corrected`);
-      entry[field] = real[field];
-    }
+/* The refusals src/links.rs makes, in the same words, because the form shows
+   whatever comes back and a preview that always says yes would hide the one
+   part of this feature with a security argument behind it. */
+function checkLink(body) {
+  const url = (body.url || '').trim();
+  const lower = url.toLowerCase();
+  if (!(body.name || '').trim()) return 'a name is needed';
+  if (!lower.startsWith('http://') && !lower.startsWith('https://')) {
+    return 'an address has to start with http:// or https://. Nothing else is accepted here ' +
+           '-- a javascript:, data: or file: address in a dock tile would run in this page ' +
+           'rather than open a site.';
   }
-}
-
-/* An installed app keeps its own notes (empty -- the Available list's prose is
-   not what the Installed row shows), so only the fields that identify the
-   application are taken from source. */
-if (window.PREVIEW_CATALOG && Object.keys(window.PREVIEW_CATALOG).length) {
-  reconcile(APP_CATALOG, ['name', 'tagline', 'icon', 'notes'], 'catalog');
-  reconcile(APPS_INSTALLED, ['name', 'tagline', 'icon', 'flatpak'], 'installed');
-} else {
-  PREVIEW_DRIFT.push(
-    'src/catalog.rs could not be read, so nothing here was checked against it ' +
-    '— the app entries are whatever this file last said they were');
-}
-
-/* The icons are checked against the sprite rather than against the catalog:
-   catalog.rs naming a symbol ui/ui-icons.svg does not define is a real bug,
-   but it is the release's bug and its own test catches it (see
-   every_icon_the_catalog_names_is_in_the_sprite in src/apps.rs). What this
-   catches is the preview's own version -- a scene or an installed entry
-   pointing at a symbol that was renamed out from under it, which draws as an
-   empty square and looks like a CSS problem. */
-function checkIcons() {
-  const wanted = new Set(
-    [...APP_CATALOG, ...APPS_INSTALLED].map((a) => a.icon).filter(Boolean));
-  return fetch('/ui-icons.svg', { credentials: 'same-origin' })
-    .then((r) => (r.ok ? r.text() : ''))
-    .then((svg) => {
-      if (!svg) return;
-      const have = new Set(
-        [...svg.matchAll(/<symbol[^>]+id="([^"]+)"/g)].map((m) => m[1]));
-      for (const icon of wanted) {
-        if (!have.has(icon)) {
-          PREVIEW_DRIFT.push(`icon "${icon}" is not a symbol in ui/ui-icons.svg`);
-        }
-      }
-    })
-    .catch(() => {});
-}
-
-/* After load, so it lands under the banner devtools.js prints rather than
-   above it, and so a drift report is the last thing in the console. */
-window.addEventListener('load', () => {
-  checkIcons().then(() => {
-    if (!PREVIEW_DRIFT.length) return;
-    console.groupCollapsed(
-      `%cWebDesk preview%c  ${PREVIEW_DRIFT.length} drifted from source`,
-      'background:#3fb6c8;color:#0f1319;padding:1px 5px;border-radius:3px',
-      'color:#f0a05a');
-    for (const line of PREVIEW_DRIFT) console.warn(line);
-    console.info('Fix these in scripts/preview/mock.js — src/catalog.rs is the source.');
-    console.groupEnd();
-  });
-});
-
-const PULL_LOG = [
-  '$ flatpak install -y --system flathub ID',
-  'Looking for matches...',
-  'Required runtime for ID found in remote flathub',
-  '',
-  'ID permissions:',
-  '    ipc  network  fallback-x11  wayland  dri  pulseaudio',
-  '',
-  '1. org.freedesktop.Platform.GL.default   0 bytes',
-  '2. ID                                    184.2 MB / 291.0 MB',
-  'Installation complete.',
-];
-
-let installState = { state: 'idle' };
-let installTicks = 0;
-
-function appsStatus() {
-  if (installState.state !== 'running') return json({ status: installState, log: '' });
-
-  installTicks++;
-  const slug = installState.slug;
-  const entry = APP_CATALOG.find((a) => a.slug === slug);
-  const id = entry ? entry.streamed.flatpak : slug;
-  const lines = PULL_LOG.map((l) => l.replaceAll('ID', id));
-
-  if (installTicks > 6) {
-    // Land on a finished state so the installed row, the toast and the new
-    // dock icon are all reachable without a Flathub to reach.
-    if (scene.install === 'fails') {
-      installState = {
-        state: 'failed', slug, name: installState.name, phase: 'downloading',
-        error: `error: The application ${id} was not found`,
-      };
-      return json({ status: installState, log: lines.slice(0, 3).join('\n') +
-        `\nerror: The application ${id} was not found` });
-    }
-    APPS_INSTALLED = [...APPS_INSTALLED, {
-      slug, name: entry.name, icon: entry.icon, tagline: entry.tagline, notes: entry.notes,
-      flatpak: id, ws: `/ws/rfb/${slug}`, streamed: entry.streamed, state: 'absent',
-      installed: NOW, actor: USER.username,
-    }];
-    installState = { state: 'done', slug, name: entry.name };
-    return json({ status: installState, log: lines.join('\n') });
+  const authority = lower.replace(/^https?:\/\//, '').split(/[/?#]/)[0];
+  if (!authority) return 'that address has no host in it';
+  if (authority.includes('@')) {
+    return 'take the username and password out of the address. They would be stored here in ' +
+           'plain text and shown back to you in the form; sign in to the site itself instead.';
   }
-  return json({
-    status: {
-      state: 'running',
-      phase: installTicks > 4 ? 'recording' : 'downloading',
-      slug,
-      name: installState.name,
-    },
-    log: lines.slice(0, 2 + installTicks).join('\n'),
-  });
+  if (authority === location.host || authority === location.hostname) {
+    return "that is WebDesk's own address. A page from this origin cannot be framed safely " +
+           'here -- point this at the application you want instead.';
+  }
+  if (body.icon && !LINK_ICONS.includes(body.icon)) {
+    return 'that is not one of the icons this build has';
+  }
+  return null;
+}
+
+function newId() {
+  const a = 'abcdefghijkmnpqrstuvwxyz23456789';
+  return Array.from({ length: 6 }, () => a[Math.floor(Math.random() * a.length)]).join('');
 }
 
 const ROUTES = [
@@ -540,83 +394,63 @@ const ROUTES = [
     return json({ ok: true });
   }],
 
-  ['GET', /^\/api\/apps\/catalog$/, () => (signedIn ? json({
-    apps: APP_CATALOG,
-    allowed: USER.admin,
-    admin: USER.admin,
-    admin_groups: ['wheel', 'sudo'],
+  /* Links. The store is this array; a real host keeps host-wide ones in
+     /var/lib/webdesk/links.json and each person's own in
+     ~/.config/webdesk/links.json, written through the privilege-dropping
+     helper -- see src/links.rs. */
+  ['GET', /^\/api\/links$/, () => (signedIn ? json({
+    links: LINKS, admin: USER.admin, icons: LINK_ICONS,
   }) : unauthorized())],
-  ['GET', /^\/api\/apps\/list$/, () => (signedIn ? json({
-    apps: APPS_INSTALLED, admin: USER.admin,
-  }) : unauthorized())],
-  /* What the host is missing, which is the panel at the top of the Apps window.
-     `scene.deps === 'missing'` is how to look at it; the default host has
-     everything, so the panel is hidden and the Install buttons work. */
-  ['GET', /^\/api\/deps$/, () => (signedIn ? json(
-    scene.deps === 'missing'
-      ? {
-        manager: 'dnf',
-        deps: [
-          { key: 'sway', label: 'Sway', need: 'streamed', present: false, offered: true,
-            group: 'compositor', package: 'sway',
-            why: 'The compositor a drawn app runs inside. Its output can be resized, so ' +
-                 "an application's resolution follows the WebDesk window." },
-          { key: 'wayvnc', label: 'wayvnc', need: 'streamed', present: false, offered: true,
-            group: null, package: 'wayvnc',
-            why: "Turns the compositor's output into a stream this browser can draw." },
-        ],
-      }
-      : { manager: 'dnf', deps: [] },
-  ) : unauthorized())],
-  ['POST', /^\/api\/deps\/install$/, () => {
-    installState = { state: 'running', phase: 'packages', slug: '', name: '' };
-    installTicks = 0;
-    return json({ ok: true });
-  }],
-  ['GET', /^\/api\/apps\/status$/, () => (signedIn ? appsStatus() : unauthorized())],
-  ['POST', /^\/api\/apps\/install$/, (_m, _q, body) => {
-    const entry = APP_CATALOG.find((a) => a.slug === (body && body.slug));
-    if (!entry) return json({ error: 'not in the catalog' }, 404);
-    installState = { state: 'running', phase: 'downloading', slug: entry.slug, name: entry.name };
-    installTicks = 0;
-    return json({ ok: true, started: true, slug: entry.slug });
-  }],
-  /* Opening answers with the socket and nothing else. There is no RFB server
-     behind it here, so the window gets as far as its own "Starting…" veil and
-     the connection then fails -- which is what the veil's failure state is for,
-     and is reachable in the preview only this way. */
-  ['POST', /^\/api\/apps\/open$/, (_m, _q, body) => {
-    APPS_INSTALLED = APPS_INSTALLED.map(
-      (a) => (a.slug === body.slug ? { ...a, state: 'running' } : a));
-    return json({ ok: true, ws: `/ws/rfb/${body.slug}` });
-  }],
-  ['POST', /^\/api\/apps\/close$/, (_m, _q, body) => {
-    APPS_INSTALLED = APPS_INSTALLED.map(
-      (a) => (a.slug === body.slug ? { ...a, state: 'absent' } : a));
-    return json({ ok: true });
-  }],
-  ['POST', /^\/api\/apps\/resize$/, () => json({ ok: true })],
-  /* Removal refuses once and then does it, which is the two-step the real host
-     insists on: the Flatpak is host-wide, so taking it away takes it away from
-     everybody, and that has to be said out loud before it happens. */
-  ['POST', /^\/api\/apps\/remove$/, (_m, _q, body) => {
-    const app = APPS_INSTALLED.find((a) => a.slug === body.slug);
-    if (app && !body.accept_uninstall) {
+  ['POST', /^\/api\/links$/, (_m, _q, body) => {
+    if (!signedIn) return unauthorized();
+    if (body.scope === 'host' && !USER.admin) {
       return json({
-        error: `${app.name} is installed once for this whole host, so removing it ` +
-               'uninstalls it for everyone.',
-        offer: {
-          uninstall: app.flatpak,
-          detail: `WebDesk installed ${app.flatpak} on this host and will uninstall it. ` +
-                  `Anyone who has ${app.name} open right now will have it stop \u2014 here ` +
-                  "or at the machine's own screen \u2014 and anything unsaved in it will " +
-                  'be lost. Each person\u2019s own files stay where they are, in their ' +
-                  'home directory.',
-        },
-      }, 409);
+        error: 'a link for everyone on this host requires membership of wheel or sudo. ' +
+               'You can add one for yourself instead.',
+      }, 403);
     }
-    APPS_INSTALLED = APPS_INSTALLED.filter((a) => a.slug !== body.slug);
-    return json({ ok: true, uninstalled: true, note: null });
+    const why = checkLink(body);
+    if (why) return json({ error: why }, 400);
+    const link = {
+      id: newId(),
+      name: body.name.trim(),
+      url: body.url.trim(),
+      icon: body.icon || 'a-globe',
+      open: body.open === 'tab' ? 'tab' : 'frame',
+      width: body.width || 1200,
+      height: body.height || 800,
+      added: NOW,
+      actor: USER.username,
+      scope: body.scope === 'host' ? 'host' : 'me',
+      editable: true,
+    };
+    LINKS = [...LINKS, link];
+    return json(link);
+  }],
+  ['PUT', /^\/api\/links\/[a-z0-9]+$/, (path, _q, body) => {
+    if (!signedIn) return unauthorized();
+    const id = path.split('/').pop();
+    const at = LINKS.findIndex((l) => l.id === id);
+    if (at < 0) return json({ error: 'there is no link with that id' }, 404);
+    if (!LINKS[at].editable) {
+      return json({ error: 'that link belongs to this host, not to you' }, 403);
+    }
+    const why = checkLink(body);
+    if (why) return json({ error: why }, 400);
+    const link = { ...LINKS[at], ...body, id };
+    LINKS = LINKS.map((l, n) => (n === at ? link : l));
+    return json(link);
+  }],
+  ['DELETE', /^\/api\/links\/[a-z0-9]+$/, (path) => {
+    if (!signedIn) return unauthorized();
+    const id = path.split('/').pop();
+    const at = LINKS.findIndex((l) => l.id === id);
+    if (at < 0) return json({ error: 'there is no link with that id' }, 404);
+    if (!LINKS[at].editable) {
+      return json({ error: 'that link belongs to this host, not to you' }, 403);
+    }
+    LINKS = LINKS.filter((l) => l.id !== id);
+    return json({ ok: true });
   }],
 ];
 

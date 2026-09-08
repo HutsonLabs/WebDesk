@@ -66,6 +66,19 @@ fn dispatch(req: &Request, payload: &[u8]) -> (Response, Vec<u8>) {
             Ok(()) => (Response::ok_data(json!({})), Vec::new()),
             Err(e) => (Response::err(e), Vec::new()),
         },
+        // The parents too, and "already there" is success rather than an error.
+        //
+        // Distinct from `mkdir` on purpose rather than a better version of it.
+        // `mkdir` is the Files window's button, where "that folder already
+        // exists" is exactly what somebody needs to be told and a silent
+        // success would hide a typo. This one is `links.rs` making
+        // `~/.config/webdesk` before writing into it, where the directory
+        // existing is the ordinary case and every parent may be missing on a
+        // fresh account. Two callers, two meanings, two ops.
+        "mkdirp" => match std::fs::create_dir_all(&req.path) {
+            Ok(()) => (Response::ok_data(json!({})), Vec::new()),
+            Err(e) => (Response::err(e), Vec::new()),
+        },
         "remove" => match remove(Path::new(&req.path)) {
             Ok(()) => (Response::ok_data(json!({})), Vec::new()),
             Err(e) => (Response::err(e), Vec::new()),

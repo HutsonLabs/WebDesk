@@ -32,7 +32,7 @@
   <div class="dock-layer">
     <div class="dock-scroll">
       <div class="dock" role="toolbar" aria-label="Applications">
-        <button type="button" class="dock-btn tip tip--up" data-app="apps" data-tip="Apps" aria-label="Apps">
+        <button type="button" class="dock-btn tip tip--up" data-app="links" data-tip="Links" aria-label="Links">
           <svg class="ic-d" aria-hidden="true"><use href="#a-apps"></use></svg>
           <span class="dock-dot" aria-hidden="true"></span>
         </button>
@@ -45,11 +45,11 @@
           <span class="dock-dot" aria-hidden="true"></span>
         </button>
 
-        <!-- Installed apps, one button each, between the built-in apps and
-             the open windows. Painted from /api/apps/list, so the dock says
-             what this host actually has rather than what was compiled into
-             it. -->
-        <div id="installed" class="dock-installed"></div>
+        <!-- Links, one button each, between the built-in apps and the open
+             windows. Painted from /api/links, which merges the host-wide ones
+             with this person's own -- so the dock says what is actually here
+             rather than anything compiled into the binary. -->
+        <div id="links" class="dock-links"></div>
 
         <!-- Open windows that are not one of the apps above -- editors -- get
              their own dock item, with the file's own icon. -->

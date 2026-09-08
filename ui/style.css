@@ -65,7 +65,7 @@ button{font:inherit;color:inherit;cursor:pointer;}
    take the scrolling away from the list inside it. */
 html,body{touch-action:manipulation;}
 .win-bar,.win-peek,.win-resize,.dock,.account,.menu,.files-bar,.files-head,
-.editor-bar,.sys-bar,.modal-actions,.toasts,.stream{touch-action:none;}
+.editor-bar,.sys-bar,.modal-actions,.toasts{touch-action:none;}
 .files-list,.sys-scroll,.sys-log,.editor textarea,.term .xterm-viewport,
 .path-menu{touch-action:pan-y;}
 
@@ -238,10 +238,10 @@ html{-webkit-tap-highlight-color:transparent;}
    without drawing a line across a pill this small. */
 .dock-tasks{display:flex;align-items:center;gap:4px;min-width:0;}
 .dock-tasks:not(:empty){margin-left:10px;}
-/* Installed apps, spaced off the same way, between the built-in apps and the
-   open windows. */
-.dock-installed{display:flex;align-items:center;gap:4px;min-width:0;}
-.dock-installed:not(:empty){margin-left:10px;}
+/* Links, spaced off the same way, between the built-in apps and the open
+   windows. */
+.dock-links{display:flex;align-items:center;gap:4px;min-width:0;}
+.dock-links:not(:empty){margin-left:10px;}
 /* A stopped app used to be dimmed here. It is drawn like every other icon
    now: the dot is what the dock says about state, and the tooltip is what
    says why an app is not running. */
@@ -386,9 +386,9 @@ html{-webkit-tap-highlight-color:transparent;}
 
    Off the flex flow, so the body is full height whether the bar is showing or
    not, and hung on the outside of the window's top edge rather than over it:
-   what it covers when it arrives is desktop, never the app. A streamed desktop
-   underneath keeps its size throughout and is never asked to renegotiate its
-   resolution because the pointer crossed an edge.
+   what it covers when it arrives is desktop, never the app. A framed page
+   underneath keeps its size throughout and is never asked to reflow because the
+   pointer crossed an edge.
 
    The window stops clipping its own overflow to allow that, so the body takes
    over the rounded corners it was borrowing. */
@@ -554,6 +554,22 @@ html{-webkit-tap-highlight-color:transparent;}
    for a session that may not update at all. Without this they lit up on hover
    and looked clickable throughout. */
 .fbtn:disabled{opacity:.55;cursor:default;}
+
+/* A chosen button in a row of alternatives -- the icon, where a link opens, who
+   sees it. Not a radio group: three of these are pictures, and a native radio
+   beside a picture is two controls saying one thing. The selected one carries
+   the accent the way the layout menu's current zone does, so "on" means the
+   same thing in both places. */
+.fbtn.on,.fbtn.on:active:not(:disabled){
+  background:var(--accent);color:#0d1117;border-color:var(--accent);
+}
+/* The one button in a bar that starts something rather than reporting on it. */
+.fbtn.go{border-color:var(--accent);color:var(--accent);}
+@media (hover:hover){.fbtn.go:hover:not(:disabled){background:var(--accent);color:#0d1117;}}
+/* A row of alternatives inside a dialog field. Wraps, because the icon row is
+   ten buttons wide and the dialog is not. */
+.pick{display:flex;flex-wrap:wrap;gap:6px;}
+.pick .fbtn--icon{padding:5px;}
 .files-list{flex:1;overflow:auto;}
 .frow{
   display:grid;grid-template-columns:1fr 90px 80px 150px;gap:10px;align-items:center;
@@ -612,15 +628,13 @@ html{-webkit-tap-highlight-color:transparent;}
   white-space:pre-wrap;overflow-wrap:anywhere;
 }
 
-/* ---------------- apps ---------------- */
-/* The Apps window reuses the System window's frame -- .sys and its bar, scroll
-   and log -- because it is the same kind of thing: a list, a note about what
-   this host can do, and a log of the last long-running job. */
+/* ---------------- links ---------------- */
+/* The Links window reuses the System window's frame -- .sys and its bar and
+   scroll -- because it is the same kind of thing: a bar with an action in it
+   and a list under it. The class names are still `apps-` because these rows are
+   the same rows the Apps window drew, and renaming them would be a diff across
+   two files that changed no pixel. */
 .apps-group{display:flex;flex-direction:column;gap:6px;flex:0 0 auto;}
-.apps-h{
-  margin:0;font-size:.68rem;font-weight:600;text-transform:uppercase;
-  letter-spacing:.07em;color:var(--muted);
-}
 .apps-list{display:flex;flex-direction:column;gap:4px;}
 .apps-row{
   display:flex;align-items:center;gap:10px;padding:9px 10px;
@@ -631,26 +645,17 @@ html{-webkit-tap-highlight-color:transparent;}
 .apps-text{min-width:0;flex:1;display:flex;flex-direction:column;gap:2px;}
 .apps-name{font-size:.84rem;font-weight:500;}
 .apps-sub{font-size:.72rem;color:var(--muted);overflow-wrap:anywhere;}
-.apps-note{font-size:.7rem;color:var(--muted);opacity:.8;line-height:1.45;}
 .apps-acts{display:flex;align-items:center;gap:6px;flex:0 0 auto;}
 .apps-empty{font-size:.8rem;color:var(--muted);padding:6px 2px;}
-/* The sentence and the one button under the missing-dependency rows. The
-   sentence is always there and the button is not, which is why they are laid
-   out as a row that survives having one of them removed. */
-.deps-foot{display:flex;align-items:center;gap:10px;padding:2px 2px 0;flex-wrap:wrap;}
-.deps-foot .sys-state{flex:1 1 220px;line-height:1.5;}
-
-/* A streamed app's window is a canvas noVNC owns. It builds its own element
-   inside this one and sizes it to 100%, so all this has to do is be the size
-   of the body and get out of the way -- and be positioned, so that the veil
-   over it has something to be absolute against.
-
-   The canvas takes focus programmatically (noVNC gives it tabindex="-1"), and
-   the outline a browser draws around a focused element would be a bright ring
-   around the whole application for as long as anybody typed into it. The
-   window's own border already says which window has the keyboard. */
-.stream{position:relative;width:100%;height:100%;background:var(--bg);}
-.stream canvas:focus,.stream canvas:focus-visible{outline:none;}
+/* A link's window is one iframe and nothing else. The border-radius is the
+   window's, not the frame's, so the page's own background cannot square off the
+   corners. Positioned, so the veil over it has something to be absolute
+   against -- the veil is what says "opening", and then what explains a window
+   that stayed blank because the site refuses to be framed. */
+.appframe{
+  display:block;width:100%;height:100%;border:0;background:var(--bg);
+  position:relative;
+}
 
 /* What the window says before there is anything to look at, and after there
    stops being. Over the whole body rather than in a bar of its own: a bar

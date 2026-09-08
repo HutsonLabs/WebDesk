@@ -1,18 +1,10 @@
-mod apps;
 mod auth;
-mod catalog;
-mod cockpit;
-mod deps;
-mod flatpak;
 mod helper;
+mod links;
 mod proto;
-mod rfb;
-mod session;
-mod systemd;
 mod pty;
 mod tls;
 mod update;
-mod which;
 
 use axum::body::Bytes;
 use axum::extract::{Query, State};
@@ -76,20 +68,6 @@ fn main() {
         helper::run_child(3);
     }
 
-    // And the same for a streamed app's session, which a systemd user unit
-    // starts. It resolves a slug against the catalog compiled in here and execs
-    // a compositor; it has no business with a runtime or a listening socket
-    // either. See `session.rs` for why this is the binary and not a script.
-    if std::env::args().nth(1).as_deref() == Some("app-session") {
-        match std::env::args().nth(2) {
-            Some(slug) => session::run(&slug),
-            None => {
-                eprintln!("usage: webdesk app-session <slug>");
-                std::process::exit(2);
-            }
-        }
-    }
-
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -137,34 +115,11 @@ async fn serve() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/update/apply", post(update::update_apply))
         .route("/api/update/status", get(update::update_status))
         .route("/ws/term", get(pty::ws_term))
-        .route("/api/apps/catalog", get(apps::catalog_list))
-        .route("/api/apps/list", get(apps::list))
-        .route("/api/apps/status", get(apps::status))
-        .route("/api/apps/install", post(apps::install))
-        .route("/api/apps/remove", post(apps::remove))
-        // There is no host-wide start or stop, and there used to be. An app is
-        // installed once for the machine and *run* once per person, so there is
-        // no single process an administrator could put into either state on
-        // everybody's behalf. Open and Close are what move it, and they are per
-        // person -- which is also why anyone signed in may use them.
-        .route("/api/apps/open", post(apps::open))
-        .route("/api/apps/close", post(apps::close))
-        // The size of a drawn app's output. Out of band because the stream
-        // cannot carry it -- see `apps::resize`.
-        .route("/api/apps/resize", post(apps::resize))
-        // What this host is missing before an app will run, and the one press
-        // that fixes it.
-        .route("/api/deps", get(deps::deps_report))
-        .route("/api/deps/install", post(deps::deps_install))
-        // The host panels. `cockpit-bridge` is behind these and is never
-        // reachable from the browser itself -- see `cockpit.rs`.
-        .route("/api/host/services", get(cockpit::host_services))
-        .route("/api/host/services/action", post(cockpit::host_service_action))
-        .route("/api/host/journal", get(cockpit::host_journal))
-        .route("/api/host/metrics", get(cockpit::host_metrics))
-        // The pixels of a streamed app. Not a proxy route: there is no HTTP on
-        // the other side of this, only RFB on a unix socket.
-        .route("/ws/rfb/{slug}", get(rfb::ws_rfb))
+        // Links: applications this desk points at rather than runs. Adding one
+        // for yourself is open to any session -- see `links.rs` for why that is
+        // not the same decision as the app catalog this replaced.
+        .route("/api/links", get(links::list).post(links::create))
+        .route("/api/links/{id}", put(links::update).delete(links::remove))
         .fallback(get(static_asset))
         .with_state(state);
 
@@ -218,7 +173,7 @@ pub fn unauthorized() -> Response {
 
 /// Run one helper round-trip off the async runtime. The helper is strictly
 /// sequential, so the mutex also serialises access to it.
-async fn ask(
+pub(crate) async fn ask(
     session: Arc<Session>,
     req: HReq,
     payload: Vec<u8>,
@@ -330,7 +285,7 @@ struct PathBody {
     to: String,
 }
 
-fn hreq(op: &str, path: &str, to: &str, len: usize) -> HReq {
+pub(crate) fn hreq(op: &str, path: &str, to: &str, len: usize) -> HReq {
     HReq { op: op.into(), path: path.into(), to: to.into(), len }
 }
 
