@@ -433,9 +433,9 @@ let winSeq = 0;
    that has never heard of any of it.
 
    Keyed by a window's app key, so "give the bar back to the app" is remembered
-   for a streamed desktop and not for the terminal. Windows without one -- an
-   editor, which is a window per file -- take the setting for the session and
-   do not write it down. */
+   for one link and not for the terminal. Windows without one -- an editor,
+   which is a window per file -- take the setting for the session and do not
+   write it down. */
 const PREFS_KEY = 'webdesk.prefs';
 
 const prefs = (() => {
@@ -887,11 +887,10 @@ function toggleZoneMenu(entry, btn, layer) {
 /* The whole window menu, at the pointer: what the three controls in the bar do,
    with the seven regions in between and a way back to the loose shape.
 
-   A window whose app outlives it adds a row of its own here -- see streamApp,
-   where closing the window and quitting the application are different acts.
-   Closing then stops being the destructive one, so it stops being drawn as
-   one, and the two sit next to each other where the difference is easiest to
-   read. */
+   Nothing in here is destructive now. A window used to be able to outlive its
+   application -- a streamed app kept running after its window closed, so the
+   menu carried a Quit beside the Close and had to say which was which. There
+   is no process behind a window any more: closing one closes a page. */
 function openWindowMenu(entry, at, layer) {
   const own = entry.menuRows ? entry.menuRows() : [];
   popForWindow(entry, {
@@ -1016,17 +1015,19 @@ function createWindow({ title, width = 720, height = 460, app = '', icon = '', t
      of the window's top edge instead, out of sight until the pointer touches
      that edge. What it covers on the way in is desktop, never the app.
 
-     What this is for is the streamed desktops. Selkies and KasmVNC put a bar
-     of their own at the top of the screen they are streaming, and two bars
-     stacked one on the other is the thing that gives away that you are looking
-     at a desktop inside a desktop. With this on there is one bar, the app's,
-     and ours arrives over it when it is asked for.
+     What this is for is a framed page that draws a bar of its own. Nearly every
+     web application does, and two bars stacked one on the other is the thing
+     that gives away that you are looking at a page inside a page. With this on
+     there is one bar, the site's, and ours arrives over it when it is asked
+     for. It was written for the streamed desktops, which put a whole desktop's
+     top bar in there; those are gone and the arrangement outlived them, because
+     the problem was never particular to them.
 
      The body is full height either way and stays that size while the bar comes
-     and goes. That matters more than it looks: a streamed canvas answers a
-     resize by renegotiating the resolution with the far end, and a bar that
-     resized the body every time the pointer crossed the top edge would have it
-     doing that twice a second. */
+     and goes. That is worth keeping even now the reason is milder: a page that
+     lays itself out on its viewport height reflows every time it changes, and a
+     bar that resized the body whenever the pointer crossed the top edge would
+     have it doing that twice a second. */
   const PEEK_IN = 90;      // hovering the edge this long asks for the bar
   const PEEK_OUT = 420;    // ...and leaving it this long puts it back
   const PEEK_TOUCH = 4000; // a finger cannot hover off, so it is given a while
@@ -1108,15 +1109,15 @@ function createWindow({ title, width = 720, height = 460, app = '', icon = '', t
     // waits for the pointer to leave -- which is the same answer, held.
     if (!entry.autohide) { win.classList.remove('peeking'); win.style.removeProperty('--peek-lift'); }
     else { peekIn(); peekOut(PEEK_HELLO); }
-    // The body has just grown or lost the bar's row, which a terminal and a
-    // streamed canvas both need telling about.
+    // The body has just grown or lost the bar's row, which the terminal needs
+    // telling about.
     if (entry.onResize) entry.onResize();
   };
 
   /* Five pixels of the window's own top edge, and the price of the whole
      arrangement: while the bar is away they answer to the desktop rather than
-     to whatever is inside the window. Small enough that a streamed desktop's
-     own bar, sitting a few pixels lower, is still there to be clicked. */
+     to whatever is inside the window. Small enough that a framed site's own bar,
+     sitting a few pixels lower, is still there to be clicked. */
   peekEl.addEventListener('pointerenter', (e) => {
     if (!entry.autohide) return;
     // A finger has no hover to offer. It gets the tap below instead.
@@ -2369,93 +2370,273 @@ function openSystem() {
   });
 }
 
-/* --------------------------------------------------------------- apps ---*/
+/* --------------------------------------------------------------- links ---*/
 
-/* Applications drawn on this host. Every installed app is a Flatpak running on
-   this machine as the signed-in user, under a compositor of its own, and what
-   arrives here is pixels over /ws/rfb/<slug> rather than a document -- see
-   streamApp.
+/* A link is an application this desk points at rather than one it runs: a name,
+   a URL and an icon. Clicking its tile opens a window with that page in it, or
+   a browser tab where the page will not be framed.
 
-   There used to be a second shape here: apps WebDesk reverse-proxied at
-   /app/<slug>/ and showed in an iframe. That whole path is gone, along with the
-   frame, the prefix and the question of whether a given app tolerated being
-   served under one. What replaces it for an operator who wants a web app on the
-   desk is docs/url-apps.md, which is a URL they supply rather than a service
-   WebDesk runs.
+   This replaces three larger things. WebDesk used to pull container images and
+   reverse-proxy them onto its own origin; then it installed Flatpaks and
+   streamed their pixels to a canvas over RFB. Both were this program running a
+   smaller, worse copy of machinery the host already had, and the second did not
+   work at all on a distribution with no compositor packaged. See src/links.rs.
 
-   The dock is painted from what the host has installed rather than from
-   anything compiled into this file, so a newly installed app appears without a
-   reload and one removed on another screen disappears on the next refresh. */
+   Nothing here fetches a URL from the host. The browser does, which is why
+   there is no proxy in front of any of this and must never be one. */
 
-let installed = [];
-let installedSig = '';
+let links = [];
+let linksSig = '';
+let linkIcons = ['a-globe'];
+let linksAdmin = false;
 
-const appKey = (slug) => 'app:' + slug;
+const linkKey = (id) => 'link:' + id;
 
-/* Opening an app is a question put to the host, not a decision taken here.
+/* Whether this desk could frame an http:// page at all.
 
-   POST /api/apps/open starts the caller's own session and answers with the
-   WebSocket to point a canvas at. There is one transport now and there used to
-   be two, which is why the answer is still read rather than assumed: the socket
-   in it is the host's to name.
+   Not a preference and not a guess -- it is the browser's mixed-content rule,
+   and it is worth deciding here rather than watching a frame stay blank. A
+   secure page may not load an insecure subresource, so an http:// link on an
+   https:// desk cannot be framed by anybody.
 
-   The catalog's `streamed` field is used for the shape of the window, and that
-   is not decoration. Nothing on the host can set a streamed app's resolution:
-   cage's output is created at a hardcoded 1280x720 and only a client asking for
-   a desktop size changes it. What gets asked for is the size of the element the
-   canvas is in, which is this window's body -- so the entry's width and height
-   are the resolution the application will run at, by way of the window they
-   open. Hence the 35: the body is what has to come out at the entry's height,
-   and the title bar's row and its rule sit above it. */
-function openApp(app) {
-  const shape = app.streamed || {};
+   The exception is real and is the common case in a homelab: browsers treat
+   http://localhost and http://127.0.0.1 as potentially trustworthy and do not
+   block them. So `http://localhost:8096` frames on an https desk and
+   `http://10.1.2.40:8096` does not, which is a distinction worth surfacing at
+   the moment somebody types one rather than after they click the tile. */
+const LOOPBACK = /^(localhost|127(\.\d+){3}|\[::1\]|::1)$/i;
+
+function frameable(url) {
+  let u;
+  try { u = new URL(url); } catch (_) { return false; }
+  if (u.protocol === 'https:') return true;
+  if (location.protocol !== 'https:') return true;
+  return LOOPBACK.test(u.hostname);
+}
+
+/* What somebody typed, turned into an address, with the guess made visible.
+
+   "localhost:8096" and "gmail.com" are both what a person means by an address
+   and neither is a URL. Prepending a scheme is the whole of the help offered,
+   and which scheme is not a coin toss: a bare name on the public internet is
+   https, and a loopback or private address in a homelab is almost always http
+   because nobody puts a certificate on it. The form shows the result as you
+   type, so a wrong guess is visible and editable rather than a surprise. */
+const PRIVATE = /^(localhost|127(\.\d+){3}|10(\.\d+){3}|192\.168(\.\d+){2}|172\.(1[6-9]|2\d|3[01])(\.\d+){2}|\[::1\]|[^.]+\.local)$/i;
+
+/* Whether what somebody typed already carries a scheme.
+
+   Not `/^[a-z][a-z0-9+.-]*:/`, which is the obvious answer and is wrong on the
+   commonest input this feature has: `localhost:8096` matches it, so `localhost`
+   reads as the scheme and nothing is prepended. The colon that starts a port and
+   the colon that ends a scheme look identical until you see what follows.
+
+   So: `scheme://` is always a scheme, and a bare `word:` is a scheme only when
+   what follows is not a port number. That keeps `localhost:8096` and
+   `box.example:8443` as addresses, and leaves `javascript:alert(1)` and
+   `mailto:x@y` alone as schemes -- which matters, because the right thing to do
+   with those is hand them to the server unchanged and let it refuse them by
+   name. Prepending `https://` would bury a hostile address inside a harmless
+   one and turn a clear refusal into a confusing one. */
+const SCHEME = /^([a-z][a-z0-9+.-]*):(\/\/)?/i;
+
+function hasScheme(t) {
+  const m = SCHEME.exec(t);
+  if (!m) return false;
+  if (m[2]) return true;
+  return !/^\d+([/?#]|$)/.test(t.slice(m[0].length));
+}
+
+function normalizeUrl(typed) {
+  const t = (typed || '').trim();
+  if (!t) return '';
+  if (hasScheme(t)) return t;
+  const host = t.split('/')[0].split('?')[0].split('#')[0].replace(/:\d+$/, '');
+  return (PRIVATE.test(host) ? 'http://' : 'https://') + t;
+}
+
+/* The host part, for the line under a link's name. A URL that will not parse is
+   shown as typed rather than as an error: the server refused it long before it
+   could be stored, so anything in this list already parsed once. */
+function urlHost(url) {
+  try { return new URL(url).host; } catch (_) { return url; }
+}
+
+/* The hostname without the port, for the loopback tests. Separate from
+   `urlHost`, which keeps the port because that is what a person reads under a
+   tile. */
+function hostOf(url) {
+  try { return new URL(url).hostname; } catch (_) { return ''; }
+}
+
+async function loadLinks() {
+  try {
+    const d = await api('/api/links');
+    links = d.links || [];
+    linkIcons = d.icons && d.icons.length ? d.icons : linkIcons;
+    linksAdmin = !!d.admin;
+  } catch (_) {
+    // A failure here must not take the dock with it: Files and Terminal work
+    // whether or not anybody has ever added a link.
+    links = [];
+  }
+  paintLinks();
+  return links;
+}
+
+function paintLinks() {
+  const host = document.getElementById('links');
+  if (!host) return;
+
+  const sig = links.map((l) => `${l.id}:${l.icon}:${l.name}:${l.open}`).join('|');
+  // Same reason paintDock guards its own rebuild: redrawing on every focus
+  // would throw away the button under the pointer mid-click.
+  if (sig === linksSig) return;
+  linksSig = sig;
+  host.textContent = '';
+
+  for (const link of links) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'dock-btn tip tip--up';
+    b.dataset.app = linkKey(link.id);
+    b.dataset.tip = `${link.name} — ${urlHost(link.url)}`;
+    b.setAttribute('aria-label', link.name);
+    b.innerHTML =
+      `<svg class="ic-d" aria-hidden="true"><use href="#${link.icon || 'a-globe'}"></use></svg>` +
+      '<span class="dock-dot" aria-hidden="true"></span>';
+    onTap(b, (e) => openLink(link, e.altKey || e.metaKey));
+    host.appendChild(b);
+  }
+  paintDock();
+}
+
+/* Opening one. A tab is a tab; a frame is a window with one iframe in it.
+
+   `wantNew` -- alt or middle click -- forces a tab whatever the link says,
+   which is the ordinary browser gesture and is also the fastest way out of a
+   page that will not frame. */
+function openLink(link, wantNew) {
+  const tab = wantNew || link.open === 'tab' || !frameable(link.url);
+  if (tab) {
+    window.open(link.url, '_blank', 'noopener');
+    return null;
+  }
+  return activateApp(linkKey(link.id), () => frameWindow(link), false);
+}
+
+function frameWindow(link) {
   return createWindow({
-    title: app.name,
-    app: appKey(app.slug),
-    icon: app.icon || 'a-box',
-    titleIcon: app.icon || 'a-box',
-    width: shape.width || 1000,
-    height: shape.height ? shape.height + 35 : 660,
+    title: link.name,
+    app: linkKey(link.id),
+    icon: link.icon || 'a-globe',
+    titleIcon: link.icon || 'a-globe',
+    width: link.width || 1200,
+    height: (link.height || 800) + 35,
     build(entry) {
       const veil = makeVeil(entry.body);
-      // Whatever is currently in this window, and how to take it out again.
-      // Reconnecting is opening a second time into the same window, so there
-      // has to be a way to empty it that is not closing it.
-      let drop = null;
 
-      const go = () => {
-        if (drop) { drop(); drop = null; }
-        // The first open of a streamed app starts a compositor and a Flatpak,
-        // which is seconds rather than milliseconds. This is the same muted
-        // line the editor says "loading…" on and the System window says
-        // "checking…" on, in the same words, for the same reason.
-        veil.wait(`Starting ${app.name}…`);
-        jsonPost('/api/apps/open', { slug: app.slug })
-          .then((d) => {
-            // Closed while the host was still starting it. Whatever it started
-            // is left alone: closing a window is not quitting an application.
-            if (!openWindows.has(entry.id)) return;
-            drop = streamApp(entry, app, d, veil, go);
-          })
-          .catch((e) => veil.stop(
-            `${app.name} did not open. ${e.message}`,
-            [{ label: 'Try again', run: go }],
-          ));
-      };
+      const frame = document.createElement('iframe');
+      frame.className = 'appframe';
+      frame.setAttribute('title', link.name);
+      /* Sandboxed, and the container frame this replaces deliberately was not.
+         That frame was on WebDesk's own origin and could not be reached without
+         getting past WebDesk's login; this one is a URL somebody typed.
 
-      entry.onClose = () => { if (drop) drop(); };
-      go();
+         Read the list by what is missing from it. `allow-top-navigation` is
+         absent, and that is the point of the whole attribute: without a sandbox
+         a framed page can set window.top.location and replace the entire desk.
+         This desk's login form takes a system password that hands back a
+         root-capable shell, so a tile that can navigate it away is the best
+         phishing position on the machine.
+
+         `allow-same-origin` is present, and is the flag to think about twice:
+         with `allow-scripts` it lets a document remove its own sandbox -- but
+         only when it is same-origin with the embedder, which is exactly why
+         src/links.rs refuses a URL on this desk's own origin. The two rules are
+         one rule written in two files and neither is safe without the other.
+         It is present rather than dropped because dropping it puts the page in
+         an opaque origin with no cookies and no storage, which breaks the login
+         of very nearly every application worth adding. */
+      frame.setAttribute('sandbox',
+        'allow-scripts allow-same-origin allow-forms allow-popups ' +
+        'allow-popups-to-escape-sandbox allow-downloads');
+      frame.setAttribute('referrerpolicy', 'no-referrer');
+      entry.body.appendChild(frame);
+
+      const toTab = () => window.open(link.url, '_blank', 'noopener');
+
+      /* A frame refused by X-Frame-Options or CSP frame-ancestors cannot be
+         detected from here. The parent may not read the child's document,
+         headers or status -- that is the same-origin policy doing its job --
+         and a blocked frame still fires `load` in Chromium, on the error page.
+         So this does not detect. It waits, and then explains the blank.
+
+         The way out is on the title bar from the first frame rather than
+         appearing with the message, because a page that is merely slow should
+         not have to finish loading before there is a button. */
+      let landed = false;
+      frame.addEventListener('load', () => { landed = true; veil.hide(); });
+      veil.wait(`Opening ${link.name}…`);
+      const timer = setTimeout(() => {
+        if (landed) return;
+        veil.stop(
+          `If this window is blank, ${urlHost(link.url)} does not allow being shown ` +
+          'inside another page.',
+          [
+            { label: 'Open in a tab', run: toTab },
+            { label: 'Always open in a tab', run: () => alwaysTab(link) },
+          ],
+        );
+      }, 3000);
+
+      const pop = document.createElement('button');
+      pop.type = 'button';
+      pop.className = 'win-btn tip';
+      pop.dataset.tip = 'Open in a tab';
+      pop.setAttribute('aria-label', 'Open in a tab');
+      pop.innerHTML = '<svg class="ic-a" aria-hidden="true"><use href="#a-external"></use></svg>';
+      onTap(pop, toTab);
+
+      const again = document.createElement('button');
+      again.type = 'button';
+      again.className = 'win-btn tip';
+      again.dataset.tip = 'Reload';
+      again.setAttribute('aria-label', 'Reload');
+      again.innerHTML = '<svg class="ic-a" aria-hidden="true"><use href="#a-refresh"></use></svg>';
+      onTap(again, () => { landed = false; veil.wait(`Opening ${link.name}…`); frame.src = link.url; });
+
+      entry.tools.append(again, pop);
+      entry.onClose = () => clearTimeout(timer);
+
+      // Set last, so the load handler is already attached.
+      frame.src = link.url;
     },
   });
 }
 
-/* What a window says while there is nothing in it to look at yet.
+/* Taking the offer the blank window made. One request, and then the window is
+   closed and reopened as a tab -- leaving a frame nobody can see behind the
+   answer would be answering the question and not acting on it. */
+async function alwaysTab(link) {
+  try {
+    await api(`/api/links/${link.id}`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...link, open: 'tab' }),
+    });
+    link.open = 'tab';
+    linksSig = '';
+    await loadLinks();
+  } catch (e) {
+    toast(e.message, 'bad');
+  }
+  for (const [id, w] of [...openWindows]) {
+    if (w.app === linkKey(link.id)) closeWindow(id);
+  }
+  window.open(link.url, '_blank', 'noopener');
+}
 
-   The words are the desk's own: .sys-state is the muted line every window in
-   this file already uses to say it is working, and it keeps its `bad` variant
-   for when the working stopped. Only the placing is new -- over the window
-   rather than in a bar above it, because what it covers is a canvas that wants
-   the whole body and would look broken sharing it. */
 function makeVeil(host) {
   const el = document.createElement('div');
   el.className = 'veil';
@@ -2488,1019 +2669,387 @@ function makeVeil(host) {
   };
 }
 
-/* The iframe, which is what almost everything is. Unchanged from when it was
-   the only case, except that the URL now comes from the answer rather than
-   from the catalog row: the host is the one that knows an app with an origin
-   of its own is reached at an absolute URL, since no prefix would serve it. */
-/* ------------------------------------------------------------- streamed ---*/
+/* ---- the Links window: what is on this desk, and adding to it */
 
-let novnc = null;
+/* The form, for adding and for editing.
 
-/* noVNC arrives the first time somebody opens a streamed app, not at boot.
+   One dialog for both, because they ask the same questions and a separate
+   "edit" that looked different would only be a second place to get the
+   validation prose wrong. What differs is the title, the button and whether the
+   fields start empty.
 
-   It is half a megabyte of ES modules, and a session that only ever opens the
-   file manager and a terminal should not pay for it -- the desk is on screen
-   in the same number of requests either way. A dynamic import is what makes
-   that possible from here: ui/app.js is a classic script, and turning it into
-   a module so a static import could sit at the top would change how every
-   symbol in it is reached from index.html.
+   Built by hand rather than through openModal's `fields`, because two of these
+   controls are not text inputs -- the icon is a row of buttons and the address
+   needs a live line under it saying what it will be turned into. */
+function linkForm(existing) {
+  const editing = !!existing;
+  return new Promise((resolve) => {
+    const back = document.createElement('div');
+    back.className = 'modal';
+    const card = document.createElement('form');
+    card.className = 'modal-card';
+    card.setAttribute('role', 'dialog');
+    card.setAttribute('aria-modal', 'true');
+    back.appendChild(card);
 
-   The modules are in this repository, vendored by scripts/vendor-novnc.py, so
-   this is still a request to WebDesk itself and still works on a host with no
-   route to the internet. */
-function loadRFB() {
-  if (!novnc) {
-    novnc = import('/vendor/novnc/core/rfb.js')
-      .then((m) => m.default)
-      // A failed import is remembered as a resolved module otherwise, and
-      // every later attempt would fail without ever retrying the fetch.
-      .catch((e) => { novnc = null; throw e; });
-  }
-  return novnc;
-}
+    const h = document.createElement('h2');
+    h.textContent = editing ? `Edit ${existing.name}` : 'Add a link';
+    card.appendChild(h);
 
-/* A Flatpak drawn on this host, in a window here.
+    const p = document.createElement('p');
+    p.className = 'modal-text';
+    p.textContent = editing
+      ? 'A name and an address. Nothing is installed and nothing runs on this host.'
+      : 'A name and an address — localhost:8096, or https://gmail.com. WebDesk stores ' +
+        'the address and draws a tile; your browser is what fetches the page.';
+    card.appendChild(p);
 
-   Returns the way to take it out of the window again -- called when the window
-   closes, and when the same window reconnects into a second session. */
-function streamApp(entry, app, opened, veil, again) {
-  const view = document.createElement('div');
-  view.className = 'stream';
-  entry.body.appendChild(view);
+    const fields = document.createElement('div');
+    fields.className = 'modal-fields';
+    card.appendChild(fields);
 
-  let rfb = null;
-  let live = true;
-  // The last text that crossed between the two clipboards, whichever way it
-  // went. Without it, text arriving from the app is read back out of the
-  // browser on the next click and posted straight back into the app.
-  let shared = null;
-  // A better answer than "the connection dropped", when there is one. The
-  // disconnect always follows, and would otherwise overwrite it.
-  let excuse = null;
+    const field = (label, value) => {
+      const l = document.createElement('label');
+      l.className = 'modal-field';
+      const cap = document.createElement('span');
+      cap.textContent = label;
+      const inp = document.createElement('input');
+      inp.type = 'text';
+      inp.value = value || '';
+      inp.spellcheck = false;
+      inp.autocapitalize = 'off';
+      inp.setAttribute('autocomplete', 'off');
+      inp.setAttribute('autocorrect', 'off');
+      l.append(cap, inp);
+      fields.appendChild(l);
+      return inp;
+    };
 
-  /* Browser clipboard -> app.
+    const name = field('Name', existing ? existing.name : '');
+    const url = field('Address', existing ? existing.url : '');
 
-     Arriving at the window is the only moment there is. noVNC calls
-     preventDefault() on the keydown it forwards, so Ctrl+V never produces a
-     paste event here to read from; and reading the clipboard at all wants a
-     user gesture, which clicking into the window is and a timer is not. This
-     hangs off focusin rather than off the click, so it happens on the
-     transition into the app rather than on every click inside it.
+    /* The live line under the address, which says the two things a person
+       cannot see for themselves: what a scheme-less entry will be turned into,
+       and that an http:// page cannot be framed on an https desk. Silent when
+       there is nothing worth saying. */
+    const say = document.createElement('p');
+    say.className = 'modal-note';
+    say.hidden = true;
+    card.appendChild(say);
 
-     Refused is the ordinary case rather than an error: this needs a secure
-     context, and Firefox does not offer readText() to a page at all. Nothing
-     is said when it fails, because there is nothing the reader could do about
-     it and the app's own clipboard goes on working within itself. */
-  const pullClipboard = () => {
-    if (!rfb || !navigator.clipboard || !navigator.clipboard.readText) return;
-    navigator.clipboard.readText().then((text) => {
-      if (!live || !rfb || !text || text === shared) return;
-      shared = text;
-      rfb.clipboardPasteFrom(text);
-    }).catch(() => {});
-  };
-
-  // App -> browser clipboard, on the same terms: written where the browser
-  // allows it, and quietly not written where it does not.
-  const pushClipboard = (e) => {
-    const text = e.detail && e.detail.text;
-    if (!text || text === shared) return;
-    shared = text;
-    if (!navigator.clipboard || !navigator.clipboard.writeText) return;
-    navigator.clipboard.writeText(text).catch(() => {});
-  };
-
-  /* Clicking the window hands the keyboard to the app.
-
-     noVNC focuses its own canvas when the canvas is clicked, which leaves the
-     cases that matter here: raising the window from the dock, or catching it
-     by the title bar, would leave the keyboard nowhere and the next thing
-     typed would go into the page. Buttons are the exception -- a press on Quit
-     or on the layout menu is a press on the desk, and pulling focus off it
-     would shut the menu that press just opened.
-
-     WHERE THE LINE IS. WebDesk claims no keyboard shortcut of its own, and
-     this is the reason: while a streamed app has focus, every key it can see
-     is the app's, including Tab, Escape, the function keys and every Alt
-     combination its menus use. The desk's only keydown listeners are the ones
-     a dialog or a menu installs while it is open, on the document in the
-     capture phase, so they take Escape and the arrows back for exactly as long
-     as there is something on top to take them for -- and hand them straight
-     back. Quitting is a button rather than a chord for the same reason: a desk
-     shortcut that reached past the app to end its session would be the worst
-     thing in this file.
-
-     What is still not ours to give away is the browser's own -- Ctrl+W, Ctrl+T,
-     F11. Taking those needs the Keyboard Lock API, which noVNC does not use
-     and which needs full screen; an app that wants Ctrl+W does not get it. */
-  const reach = (e) => {
-    if (!rfb || (e.target && e.target.closest && e.target.closest('button'))) return;
-    rfb.focus({ preventScroll: true });
-  };
-  entry.win.addEventListener('pointerdown', reach);
-  view.addEventListener('focusin', pullClipboard);
-
-  /* Quit, which is not Close.
-
-     Closing this window leaves the compositor and the application running on
-     the host with everything unsaved still in them, and opening the app again
-     comes back to exactly that. Quitting ends the session, which is the act
-     that can lose work. So it is the one that asks first, the one drawn in
-     red, and the one that never happens by accident -- while the × beside it
-     says, in its tooltip, that it does not do this. */
-  const quit = async () => {
-    const ok = await askConfirm(
-      `Quit ${app.name}?`,
-      `${app.name} stops running on this host and anything unsaved in it is lost. ` +
-      'Closing the window instead leaves it running, and opening it again comes back to it.',
-      'Quit',
-    );
-    if (!ok) return;
-    try {
-      await jsonPost('/api/apps/close', { slug: app.slug });
-    } catch (e) {
-      toast(e.message, 'bad');
-      return;
+    /* The icon, as a row of buttons rather than a select: there are ten, they
+       are pictures, and a dropdown of pictures is a dropdown you cannot read. */
+    const iconLabel = document.createElement('div');
+    iconLabel.className = 'modal-field';
+    const iconCap = document.createElement('span');
+    iconCap.textContent = 'Icon';
+    const iconRow = document.createElement('div');
+    iconRow.className = 'pick';
+    let icon = (existing && existing.icon) || 'a-globe';
+    for (const id of linkIcons) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'fbtn fbtn--icon' + (id === icon ? ' on' : '');
+      b.setAttribute('aria-label', id.replace(/^a-/, ''));
+      b.innerHTML = `<svg class="ic-a" aria-hidden="true"><use href="#${id}"></use></svg>`;
+      onTap(b, () => {
+        icon = id;
+        for (const other of iconRow.children) other.classList.toggle('on', other === b);
+      });
+      iconRow.appendChild(b);
     }
-    closeWindow(entry.id);
-  };
+    iconLabel.append(iconCap, iconRow);
+    card.appendChild(iconLabel);
 
-  const quitBtn = document.createElement('button');
-  quitBtn.type = 'button';
-  quitBtn.className = 'win-btn win-btn--icon win-btn--quit tip';
-  quitBtn.dataset.tip = `Quit ${app.name} — ends the session`;
-  quitBtn.setAttribute('aria-label', `Quit ${app.name}`);
-  quitBtn.innerHTML = '<svg class="ic-a" aria-hidden="true"><use href="#a-signout"></use></svg>';
-  onTap(quitBtn, quit);
-  entry.tools.append(quitBtn);
-
-  // The × in this window's bar does not mean what it means in every other one,
-  // so it stops saying the word that means the other thing. Its tooltip is the
-  // whole explanation anybody gets before pressing it, which is why it is a
-  // sentence.
-  const closeBtn = entry.win.querySelector('.win-bar > .win-btn.close');
-  const closeSays = (text) => {
-    if (!closeBtn) return;
-    closeBtn.dataset.tip = text;
-    closeBtn.setAttribute('aria-label', text);
-  };
-  closeSays(`Close this window — ${app.name} keeps running`);
-
-  // The same pair again, where they sit next to each other and the difference
-  // is easiest to read.
-  entry.closeSub = `${app.name} keeps running`;
-  /* How much bigger the application draws itself, remembered per app and per
-     browser rather than on the host.
-
-     It is a preference about eyesight and a screen, so it belongs to the
-     person looking rather than to the machine -- two people opening the same
-     app on the same host want different answers, and a value stored beside
-     the install would give them one between them.
-
-     The default is the browser's own devicePixelRatio, which is the right
-     answer without anybody choosing: the framebuffer is asked for in device
-     pixels, so on a HiDPI display an unscaled session would come back sharp
-     and half the size it should be. On an ordinary display that is 1, and
-     somebody who wants it larger says so. */
-  const scaleKey = `wd.scale.${app.slug}`;
-  let scale = parseFloat(localStorage.getItem(scaleKey) || '') ||
-    Math.max(1, window.devicePixelRatio || 1);
-  /* Assigned by the stream setup below, which is the only place that knows how
-     to measure the window. Declared here because the window menu is built
-     before a pixel has arrived and has to be able to call it. */
-  let asked = '';
-  let askSize = async () => {};
-
-  /* Zoom lives in the window menu rather than on a toolbar, and not for want of
-     room. The obvious home for it is Ctrl and the plus key, and those belong to
-     the browser -- taking them would mean Keyboard Lock and a promise this does
-     not otherwise make. A row somebody opens deliberately is also the honest
-     shape for a setting that is remembered: it is not a gesture, it is a
-     preference. */
-  const setScale = async (n) => {
-    scale = n;
-    localStorage.setItem(scaleKey, String(n));
-    asked = '';
-    await askSize();
-  };
-  const ZOOMS = [1, 1.25, 1.5, 1.75, 2, 2.5, 3];
-  entry.menuRows = () => [
-    { sep: true },
-    ...ZOOMS.map((n) => ({
-      label: `${Math.round(n * 100)}%`,
-      sub: n === scale ? 'Current size' : '',
-      run: () => setScale(n),
-    })),
-    { sep: true },
-    { label: `Quit ${app.name}`, sub: 'Ends the session', danger: true, run: quit },
-  ];
-
-  const stop = () => {
-    live = false;
-    // disconnect(), never /api/apps/close: taking the window away is not the
-    // same as taking the application away, and only the button above does the
-    // second one.
-    if (rfb) { try { rfb.disconnect(); } catch (_) {} }
-    rfb = null;
-    entry.onResize = null;
-    entry.menuRows = null;
-    entry.closeSub = '';
-    entry.tools.textContent = '';
-    entry.win.removeEventListener('pointerdown', reach);
-    closeSays('Close');
-    view.remove();
-  };
-
-  veil.wait(`Connecting to ${app.name}…`);
-
-  loadRFB().then((RFB) => {
-    if (!live) return;
-
-    const url = new URL(opened.ws, location.href);
-    url.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-
-    /* wsProtocols is empty on purpose, and it is the one option that has to be
-       right. /ws/rfb/<slug> carries raw RFB in binary frames; it is not
-       websockify, and there is no `binary`/`base64` subprotocol to agree on.
-       Naming one here would have the browser offer a subprotocol the host will
-       not answer, and the handshake would fail before a byte of RFB. */
-    try {
-      rfb = new RFB(view, url.href, { wsProtocols: [] });
-    } catch (e) {
-      // It throws for one reason: this browser cannot give it a 2D canvas
-      // context. Nothing about the host or the app is wrong, and no amount of
-      // retrying will change it, so the offer to try again is not made.
-      veil.stop(`This browser cannot draw ${app.name}. ${e.message}`, null);
-      return;
+    /* Where it opens. A window is the default and is what makes a link feel
+       like an app. A tab is the honest answer for the many sites that refuse to
+       be framed, and the only answer for an http:// address on an https desk --
+       which is why the window button can end up disabled below rather than
+       merely unselected. */
+    const openLabel = document.createElement('div');
+    openLabel.className = 'modal-field';
+    const openCap = document.createElement('span');
+    openCap.textContent = 'Opens';
+    const openRow = document.createElement('div');
+    openRow.className = 'pick';
+    let open = (existing && existing.open) || 'frame';
+    const openBtns = {};
+    for (const [val, label] of [['frame', 'In a window'], ['tab', 'In a browser tab']]) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'fbtn' + (val === open ? ' on' : '');
+      b.textContent = label;
+      onTap(b, () => {
+        if (b.disabled) return;
+        open = val;
+        for (const k of Object.keys(openBtns)) openBtns[k].classList.toggle('on', k === val);
+      });
+      openBtns[val] = b;
+      openRow.appendChild(b);
     }
+    openLabel.append(openCap, openRow);
+    card.appendChild(openLabel);
 
-    // The letterbox around a framebuffer that does not match the window is
-    // noVNC's own grey otherwise, which is the one colour on screen that
-    // belongs to nothing.
-    rfb.background = 'var(--bg)';
-
-    /* The resolution is set out of band, and that is not the design anybody
-       would have chosen -- it is what measuring the host turned up.
-
-       wlroots brings cage's headless output up at a hardcoded 1280x720.
-       WLR_HEADLESS_OUTPUTS sets how many outputs there are, not how big, and
-       cage has no flag for it. The obvious lever is the VNC one: a client asks
-       with SetDesktopSize and the server applies it through
-       wlr-output-management, which cage does implement. But wayvnc through
-       0.7.2 -- what Debian, Ubuntu and EPEL 9 all ship -- never registers a
-       handler for that request, so it is received and dropped with nothing
-       logged at either end. Checked on the binary rather than inferred: no
-       desktop-layout symbol is referenced at all.
-
-       So the ask goes around the stream instead. /api/apps/resize reaches the
-       session over a socket of its own, and the session tells its compositor
-       through swaymsg. `askSize` below is that call.
-
-       It only works under Sway, and that is a property of the host rather than
-       of this code. cage cannot resize its output at all: asking it to trips an
-       assertion in wlroots' scene layout and the compositor dumps core, taking
-       the application with it -- measured, which is why nothing here ever asks
-       cage for anything. A host with only cage is one where the app stays at
-       1280x720 and the fallback below is doing all the work.
-
-       resizeSession stays true regardless. It costs one ignored request on the
-       versions that ignore it, and on wayvnc 0.8 and later it is the better
-       path -- in the stream, with no round trip through WebDesk. The two ask
-       for the same number, so a host that honours both simply arrives twice.
-
-       scaleViewport stays on underneath as the fallback. When the resize lands
-       the framebuffer already matches the window, the scale factor is exactly
-       1, and it costs nothing. When it does not -- an old wayvnc with no
-       wlr-randr on the host -- the picture still fills the window, soft rather
-       than showing the top-left 1280x720 with a grey margin round it. */
-    rfb.scaleViewport = true;
-    rfb.resizeSession = true;
-
-    /* Ask the session for a desktop the size of the element it is drawn in.
-
-       Device pixels, not CSS pixels: `view` is measured in CSS units and a
-       framebuffer is counted in real ones, so on a display with any scaling at
-       all the two differ by devicePixelRatio and asking in the wrong one gives
-       a picture that is right-sized and soft. Rounded, because a fractional
-       ratio makes fractional pixels and a compositor takes integers.
-
-       Failure is quiet on purpose. The ordinary reason is that the session has
-       not finished starting and its control socket does not exist yet, and the
-       size it was started with is the entry's own -- already close to right.
-       A window that complained every time it was dragged would be worse than
-       one that stayed the size it was. */
-    asked = '';
-    askSize = async (retry = true) => {
-      if (!rfb || entry.win.hidden) return;
-      const r = Math.max(1, window.devicePixelRatio || 1);
-      const w = Math.round(view.clientWidth * r);
-      const h = Math.round(view.clientHeight * r);
-      if (w < 320 || h < 320) return;
-      const want = `${w}x${h}@${scale}`;
-      if (want === asked) return;
-      asked = want;
-      try {
-        const res = await jsonPost('/api/apps/resize', {
-          slug: app.slug, width: w, height: h, scale,
+    let scope = (existing && existing.scope) || 'me';
+    if (linksAdmin && !editing) {
+      const sLabel = document.createElement('div');
+      sLabel.className = 'modal-field';
+      const sCap = document.createElement('span');
+      sCap.textContent = 'Who sees it';
+      const sRow = document.createElement('div');
+      sRow.className = 'pick';
+      const sBtns = {};
+      for (const [val, label] of [['me', 'Just me'], ['host', 'Everyone on this host']]) {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'fbtn' + (val === scope ? ' on' : '');
+        b.textContent = label;
+        onTap(b, () => {
+          scope = val;
+          for (const k of Object.keys(sBtns)) sBtns[k].classList.toggle('on', k === val);
         });
-        /* A refusal here is a real answer and not a glitch: 200% in a small
-           window leaves the application less logical room than anything can lay
-           out in, and the host says so in a sentence. Show it and step back to
-           what was working, rather than leaving somebody at a size that did not
-           take with nothing on screen to say why. */
-        if (!res.ok && res.reason && /scale|lay out/.test(res.reason)) {
-          toast(res.reason, 'bad');
-          return;
-        }
-        // The one failure worth retrying: opening races the session, and the
-        // socket appears a moment after the pixels do.
-        if (!res.ok && retry) {
-          asked = '';
-          setTimeout(() => askSize(false), 1200);
-        }
-      } catch (_) {
-        asked = '';
+        sBtns[val] = b;
+        sRow.appendChild(b);
       }
-    };
-
-    /* Debounced, because a drag is a hundred resize events and each one would
-       be a compositor mode change. The trailing edge is the one that matters:
-       what somebody wants is the size they let go at. */
-    let sizeTimer = 0;
-    const askSizeSoon = () => {
-      clearTimeout(sizeTimer);
-      sizeTimer = setTimeout(() => askSize(), 250);
-    };
-
-    /* noVNC watches its own element with a ResizeObserver, so an ordinary
-       resize needs nothing from here. Minimising does: a hidden window is
-       display:none, its element measures 0x0, and noVNC would dutifully ask
-       the compositor for a desktop that size. Asking is switched off while
-       there is nothing to ask about and back on when the window returns, both
-       of which run before the observer, which fires at the end of the frame. */
-    entry.onResize = () => {
-      if (!rfb) return;
-      rfb.resizeSession = !entry.win.hidden;
-      // A hidden window measures 0x0, so there is nothing to ask for; coming
-      // back from minimised is a resize like any other and asks again.
-      if (!entry.win.hidden) askSizeSoon();
-    };
-
-    rfb.addEventListener('connect', () => {
-      veil.hide();
-      // Said again, out loud. noVNC asks for the window's size on its own once
-      // the far end admits it can resize, but that is buried in a private path
-      // and the whole resolution depends on the ask being made; this is the
-      // one line that says so where somebody reading will find it. Setting it
-      // to the value it already has still sends the request.
-      if (rfb) rfb.resizeSession = true;
-      // And the ask that actually works on the wayvnc most hosts have.
-      askSize();
-      // Arriving is enough to type into. Without this the first thing anybody
-      // does with a freshly opened app is click it once for no visible reason.
-      if (rfb) rfb.focus({ preventScroll: true });
-    });
-
-    rfb.addEventListener('clipboard', pushClipboard);
-
-    // wayvnc listens on a socket only this process can open, so there is no
-    // password in this arrangement. Being asked for one means the host is set
-    // up in a way WebDesk cannot answer for, and a prompt that can never be
-    // satisfied is worse than saying so.
-    rfb.addEventListener('credentialsrequired', () => {
-      excuse = `${app.name} asked for a password, and WebDesk has none to give it.`;
-      if (rfb) { try { rfb.disconnect(); } catch (_) {} }
-    });
-    rfb.addEventListener('securityfailure', (e) => {
-      const why = (e.detail && e.detail.reason) || 'it gave no reason';
-      excuse = `${app.name} refused the connection: ${why}.`;
-    });
-
-    rfb.addEventListener('disconnect', (e) => {
-      if (!live) return;
-      rfb = null;
-      // A clean disconnect is the application having exited -- `cage` holds
-      // exactly one, and leaves when it does. That is not a fault, so it does
-      // not read as one, but the way back is the same button either way.
-      const clean = e.detail && e.detail.clean;
-      veil.stop(
-        excuse || (clean
-          ? `${app.name} has closed.`
-          : `The connection to ${app.name} was lost.`),
-        [{ label: excuse || !clean ? 'Reconnect' : 'Start again', run: again }],
-      );
-    });
-  }).catch((e) => {
-    // Only the import can land here now; everything after it answers for
-    // itself. A vendored file that will not load is a broken install rather
-    // than a broken host, but trying again costs nothing and says so.
-    if (live) {
-      veil.stop(`The remote display client would not load. ${e.message}`,
-                [{ label: 'Try again', run: again }]);
+      sLabel.append(sCap, sRow);
+      card.appendChild(sLabel);
     }
+
+    const err = document.createElement('p');
+    err.className = 'login-err';
+    err.setAttribute('role', 'alert');
+    card.appendChild(err);
+
+    const actions = document.createElement('div');
+    actions.className = 'modal-actions';
+    const cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.className = 'modal-btn';
+    cancel.textContent = 'Cancel';
+    const go = document.createElement('button');
+    go.type = 'submit';
+    go.className = 'modal-btn modal-btn--go';
+    go.textContent = editing ? 'Save' : 'Add';
+    actions.append(cancel, go);
+    card.appendChild(actions);
+
+    const recheck = () => {
+      const raw = url.value.trim();
+      const full = normalizeUrl(raw);
+      const parts = [];
+      if (raw && full !== raw) parts.push(`Will be saved as ${full}`);
+      /* The one thing about a loopback address nobody expects. WebDesk stores
+         the address and *your browser* fetches it, so localhost is the machine
+         your browser is on -- your laptop -- and not the host this desk runs on.
+         Right when you are sitting at the server; wrong, silently, from anywhere
+         else, and the symptom is a tile that works for one person and not for
+         another. Said here rather than in a document nobody opens. */
+      if (raw && full && LOOPBACK.test(hostOf(full))) {
+        parts.push(
+          'localhost is the machine your browser is on, not this server. If you reach ' +
+          'WebDesk from another computer, point this at the server\u2019s own name or ' +
+          'address instead.');
+      }
+      if (raw && full && !frameable(full)) {
+        parts.push(
+          'Your browser will not show an http:// page inside this desk, because the desk is ' +
+          'on https. This one opens in a tab.');
+        open = 'tab';
+        openBtns.frame.classList.remove('on');
+        openBtns.frame.disabled = true;
+        openBtns.tab.classList.add('on');
+      } else {
+        openBtns.frame.disabled = false;
+      }
+      say.textContent = parts.join(' ');
+      say.hidden = !parts.length;
+    };
+    url.addEventListener('input', recheck);
+
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      document.removeEventListener('keydown', onKey, true);
+      back.remove();
+      resolve(value);
+    };
+    function onKey(e) {
+      if (e.key !== 'Escape') return;
+      e.preventDefault();
+      e.stopPropagation();
+      finish(null);
+    }
+    document.addEventListener('keydown', onKey, true);
+
+    onTap(cancel, () => finish(null));
+    back.addEventListener('pointerdown', (e) => { if (e.target === back) finish(null); });
+    card.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const full = normalizeUrl(url.value);
+      if (!name.value.trim()) { err.textContent = 'It needs a name.'; name.focus(); return; }
+      if (!full) { err.textContent = 'It needs an address.'; url.focus(); return; }
+      finish({ name: name.value.trim(), url: full, icon, open, scope });
+    });
+
+    document.body.appendChild(back);
+    recheck();
+    name.focus();
+    name.select();
   });
-
-  return stop;
 }
 
-async function loadInstalled() {
-  try {
-    const d = await api('/api/apps/list');
-    installed = d.apps || [];
-  } catch (_) {
-    // A failure here must not take the dock with it: the built-in apps work
-    // whether or not this host can draw anything at all.
-    installed = [];
-  }
-  paintInstalled();
-  return installed;
-}
-
-function paintInstalled() {
-  const host = document.getElementById('installed');
-  if (!host) return;
-
-  const sig = installed.map((a) => `${a.slug}:${a.icon}:${a.state}`).join('|');
-  // Same reason paintDock guards its own rebuild: redrawing on every focus
-  // would throw away the button under the pointer mid-click.
-  if (sig === installedSig) return;
-  installedSig = sig;
-  host.textContent = '';
-
-  for (const app of installed) {
-    const b = document.createElement('button');
-    b.type = 'button';
-    b.className = 'dock-btn tip tip--up';
-    b.dataset.app = appKey(app.slug);
-    // A stopped app is still in the dock -- it is installed, and clicking it
-    // is how you find out why it is not running -- and it is drawn like every
-    // other icon. Its state is in the tooltip, not in the ink.
-    const running = app.state === 'running';
-    b.dataset.tip = running ? app.name : `${app.name} — ${app.state}`;
-    b.setAttribute('aria-label', app.name);
-    b.innerHTML =
-      `<svg class="ic-d" aria-hidden="true"><use href="#${app.icon || 'a-box'}"></use></svg>` +
-      '<span class="dock-dot" aria-hidden="true"></span>';
-    onTap(b, (e) => activateApp(appKey(app.slug), () => openApp(app), e.altKey || e.metaKey));
-    host.appendChild(b);
-  }
-  paintDock();
-}
-
-/* ---- the Apps window: what is installed, and what could be */
-
-/* "a", "a and b", "a, b and c". Two is the common case and joining on " and "
-   would do for it, which is exactly why three reads so badly when it turns up:
-   nobody notices until a host is short of three things at once. */
-const andList = (xs) =>
-  xs.length < 3 ? xs.join(' and ') : `${xs.slice(0, -1).join(', ')} and ${xs[xs.length - 1]}`;
-
-/* The six words a user unit's state arrives as, in the words a person reads.
-
-   They come from systemd::word_for, which is the only place that vocabulary is
-   decided, so a state missing here paints as a raw systemd token. `absent` is
-   the ordinary condition of an app nobody has opened rather than a fault --
-   there is no unit until an open creates one. */
-const APP_STATES = {
-  running: 'Open',
-  exited: 'Not open',
-  absent: 'Not open',
-  restarting: 'Starting',
-  failed: 'Failed to start',
-  unknown: 'Unknown',
-};
-
-function openApps() {
+function openLinks() {
   return createWindow({
-    title: 'Apps',
-    app: 'apps',
-    width: 780,
-    height: 580,
+    title: 'Links',
+    app: 'links',
+    width: 660,
+    height: 520,
     build(entry) {
       const root = document.createElement('div');
       root.className = 'sys';
       root.innerHTML = `
         <div class="sys-bar">
+          <button class="fbtn go" data-a="add">Add a link</button>
           <button class="fbtn" data-a="refresh">Refresh</button>
           <span class="sys-state" data-el="state"></span>
         </div>
         <div class="sys-scroll">
-          <div class="sys-note" data-el="note" hidden></div>
-          <div class="apps-group" data-el="depsg" hidden>
-            <h3 class="apps-h">Missing on this host</h3>
-            <div class="apps-list" data-el="deps"></div>
-            <div class="deps-foot">
-              <span class="sys-state" data-el="depsay"></span>
-              <span data-el="depsact"></span>
-            </div>
-          </div>
           <div class="apps-group">
-            <h3 class="apps-h">Installed</h3>
-            <div class="apps-list" data-el="mine"></div>
+            <div class="apps-list" data-el="list"></div>
           </div>
-          <div class="apps-group">
-            <h3 class="apps-h">Available</h3>
-            <div class="apps-list" data-el="store"></div>
-          </div>
-          <pre class="sys-log" data-el="log" hidden></pre>
         </div>`;
       entry.body.appendChild(root);
-
       const $ = (n) => root.querySelector(`[data-el="${n}"]`);
-      let catalog = { apps: [], allowed: false, admin: false };
-      let deps = { deps: [], manager: null };
-      let timer = null;
       let live = true;
-      // What to do once the job now in the host's status slot has landed.
-      let after = null;
 
-      const note = (text, cls) => {
-        const el = $('note');
-        el.hidden = !text;
-        el.textContent = text || '';
-        el.className = 'sys-note' + (cls ? ' ' + cls : '');
-      };
-
-      function row(app, isInstalled) {
+      function row(link) {
         const el = document.createElement('div');
         el.className = 'apps-row';
 
         const icon = document.createElement('span');
         icon.className = 'apps-icon';
-        icon.innerHTML = `<svg class="ic-a" aria-hidden="true"><use href="#${app.icon || 'a-box'}"></use></svg>`;
+        icon.innerHTML = `<svg class="ic-a" aria-hidden="true"><use href="#${link.icon || 'a-globe'}"></use></svg>`;
 
         const text = document.createElement('div');
         text.className = 'apps-text';
-        const name = document.createElement('div');
-        name.className = 'apps-name';
-        name.textContent = app.name;
+        const nm = document.createElement('div');
+        nm.className = 'apps-name';
+        nm.textContent = link.name;
         const sub = document.createElement('div');
         sub.className = 'apps-sub';
-        // The application id, which is the only part of an installed app that
-        // exists on disk and the thing an operator would go and look at.
-        sub.textContent = isInstalled
-          ? `${APP_STATES[app.state] || app.state} · ${app.flatpak}`
-          : app.tagline;
-        text.append(name, sub);
-        if (app.notes) {
-          const n = document.createElement('div');
-          n.className = 'apps-note';
-          n.textContent = app.notes;
-          text.appendChild(n);
-        }
+        // The address, then how it opens, then who else can see it. A personal
+        // link says nothing about scope, because "just me" is the ordinary case
+        // and labelling it would only make the shared ones harder to spot.
+        const bits = [link.url];
+        bits.push(link.open === 'tab' ? 'opens in a tab' : 'opens in a window');
+        if (link.scope === 'host') bits.push('everyone on this host');
+        sub.textContent = bits.join(' · ');
+        text.append(nm, sub);
 
         const acts = document.createElement('div');
         acts.className = 'apps-acts';
-
-        const button = (label, tip, fn, cls) => {
+        const button = (label, fn, cls) => {
           const b = document.createElement('button');
           b.type = 'button';
           b.className = 'fbtn' + (cls ? ' ' + cls : '');
           b.textContent = label;
-          if (tip) b.title = tip;
           onTap(b, fn);
           acts.appendChild(b);
           return b;
         };
-
-        if (isInstalled) {
-          /* Opened straight from the row this list was painted from, and not
-             from a catalog entry looked up beside it. /api/apps/list already
-             carries the entry's `streamed` shape -- which is the window's first
-             size, and therefore the resolution the app will run at -- so a
-             second lookup here would be a second place for the two to disagree.
-             An app whose entry has gone away in a later build has no shape in
-             either, and costs an opening size rather than a broken window. */
-          // Always offered. There is nothing running until somebody opens it --
-          // opening *is* what starts it -- so waiting for `running` here would
-          // be waiting for the thing this button does.
-          button('Open', 'Open in a window', () =>
-            activateApp(appKey(app.slug), () => openApp(app), false));
-          /* No Start and no Stop, and there used to be both. They were the
-             container engine's verbs, and an app that runs once per person has
-             nothing host-wide to apply them to: its session belongs to whoever
-             opened it, is started by opening and ended by Quit in its own
-             window. An administrator does not stop it on somebody else's behalf
-             from here, and the server has no route that would. */
-          if (catalog.admin) button('Remove', '', () => removeApp(app), 'danger');
-        } else {
-          const b = button('Install', '', () => install(app));
-          /* Who you are is the only thing that decides this here.
-
-             Whether this host has what the entry needs -- a compositor, an RFB
-             server, flatpak -- is decided by the install itself, which refuses
-             with the list of what is missing and offers to install it. Greying
-             the button out on that instead would hide the one offer that fixes
-             the problem behind a control nobody can press, and it would hide it at the exact moment somebody wanted
-             it. An entry this host is not ready for stays visible, stays
-             pressable, and answers with what to do about it. */
-          b.disabled = !catalog.admin;
+        button('Open', () => openLink(link, false));
+        if (link.editable) {
+          button('Edit', () => edit(link));
+          button('Remove', () => remove(link), 'danger');
         }
 
         el.append(icon, text, acts);
         return el;
       }
 
-      /* What the host has not got, above everything the host could run.
-
-         This is first in the window on purpose. It is not a list of things to
-         browse: it is the reason half the entries below will fail, and reading
-         it after choosing one is reading it too late. Each row is what is
-         missing, the one sentence the host sent about what stops working
-         without it, and the package that would provide it here. */
-      function renderDeps() {
-        const group = $('depsg');
-        const list = $('deps');
-        const say = $('depsay');
-        const acts = $('depsact');
-        /* Only what WebDesk would actually put on this host. A row that is
-           absent and not offered is not a gap somebody can close from here, and
-           listing it would put a button in front of a decision the server has
-           already declined to make. */
-        const missing = (deps.deps || []).filter((d) => !d.present && d.offered);
-
-        group.hidden = !missing.length;
-        list.textContent = '';
-        say.textContent = '';
-        acts.textContent = '';
-        if (group.hidden) return;
-
-        for (const d of missing) {
-          const el = document.createElement('div');
-          el.className = 'apps-row';
-          const text = document.createElement('div');
-          text.className = 'apps-text';
-          const name = document.createElement('div');
-          name.className = 'apps-name';
-          name.textContent = d.label;
-          const sub = document.createElement('div');
-          sub.className = 'apps-sub';
-          sub.textContent = d.why;
-          const pkg = document.createElement('div');
-          pkg.className = 'apps-note';
-          // A dependency with no package name here is not a button that has
-          // been disabled -- it is a thing WebDesk genuinely cannot do, and
-          // saying which one it is, is the whole of the help available.
-          pkg.textContent = d.package
-            ? `Package: ${d.package}`
-            : 'WebDesk does not know which package provides this on this host.';
-          text.append(name, sub, pkg);
-          el.appendChild(text);
-          list.appendChild(el);
-        }
-
-        if (!missing.length) return;
-
-        const named = missing.filter((d) => d.package);
-        const unnamed = missing.filter((d) => !d.package);
-        const unnamedSays = unnamed.length
-          ? ` ${andList(unnamed.map((d) => d.label))} ` +
-            `${unnamed.length > 1 ? 'have' : 'has'} no package name on this host and must be ` +
-            'installed by hand whichever way this machine installs software.'
-          : '';
-
-        // Three ways this cannot be a button, and each of them is a different
-        // sentence. A button that answers 403 is worse than no button, so the
-        // first case says who can instead of offering something that will be
-        // refused.
-        if (!catalog.admin) {
-          say.textContent =
-            `Installing these requires membership of ${(catalog.admin_groups || []).join(' or ')}. ` +
-            'Ask an administrator of this host.';
-          return;
-        }
-        if (!deps.manager) {
-          say.textContent =
-            'WebDesk does not recognise this host\'s package manager, so it cannot install ' +
-            `these for you. Install ${andList(missing.map((d) => d.label))} the way this ` +
-            'machine installs software, then press Refresh.';
-          return;
-        }
-        if (!named.length) {
-          say.textContent = unnamedSays.trim();
-          return;
-        }
-
-        say.textContent = `${deps.manager} will install ` +
-          `${andList(named.map((d) => d.package))}.${unnamedSays}`;
-        const b = document.createElement('button');
-        b.type = 'button';
-        b.className = 'fbtn';
-        b.textContent = `Install ${andList(named.map((d) => d.label))}`;
-        onTap(b, () => installDeps(named.map((d) => d.key)));
-        acts.appendChild(b);
-      }
-
-      /* One press, and then the log the Apps window is already watching.
-
-         Nothing new reports this. /api/deps/install writes into the same place
-         an app install writes into, and poll() below is already the thing that
-         reads it, phrases the phase and refreshes when it lands -- so a
-         dependency install and an app install look the same going past,
-         because they are the same going past.
-
-         `then` is what an install blocked for want of these comes back to. One
-         job at a time is all the host's status slot can report, so the second
-         one waits for the first to land rather than racing it into the same
-         log. */
-      async function installDeps(keys, then) {
-        try {
-          await jsonPost('/api/deps/install', { keys });
-        } catch (e) {
-          note(e.message, 'bad');
-          toast('Nothing was installed.', 'bad');
-          return;
-        }
-        $('log').hidden = false;
-        poll(then);
-      }
-
       function render() {
-        const mine = $('mine');
-        const store = $('store');
-        mine.textContent = '';
-        store.textContent = '';
-        renderDeps();
-
-        if (!installed.length) {
+        const list = $('list');
+        list.textContent = '';
+        if (!links.length) {
           const empty = document.createElement('div');
           empty.className = 'apps-empty';
-          empty.textContent = 'Nothing installed yet.';
-          mine.appendChild(empty);
+          empty.textContent =
+            'No links yet. Add one for anything this machine — or your network — already serves.';
+          list.appendChild(empty);
         }
-        for (const a of installed) mine.appendChild(row(a, true));
-
-        // An app that is already installed belongs in one place only. Listing it
-        // again below under a dead "Installed" button asks the reader to match
-        // the two lists up by eye to learn nothing.
-        const have = new Set(installed.map((a) => a.slug));
-        const offered = catalog.apps.filter((a) => !have.has(a.slug));
-        if (!offered.length && catalog.apps.length) {
-          const done = document.createElement('div');
-          done.className = 'apps-empty';
-          done.textContent = 'Everything in the catalog is installed.';
-          store.appendChild(done);
-        }
-        for (const a of offered) store.appendChild(row(a, false));
-
-        // The one thing left that explains a disabled button on this screen.
-        // What the *host* is missing has its own panel at the top, with the
-        // button that fixes it, so it is not repeated here.
-        note(
-          catalog.admin
-            ? ''
-            : `Installing apps requires membership of ${(catalog.admin_groups || []).join(' or ')}. ` +
-              'You can open anything already installed.',
-        );
-
-        /* Cleared here, and this is the only place that clears it. `tick`
-           writes the phase of a running install into it and a render only ever
-           follows one landing, so leaving it would pin "Downloading GIMP…"
-           beside a GIMP that finished installing. It used to be overwritten
-           with the container engine's name, which cleared it by accident. */
+        for (const l of links) list.appendChild(row(l));
         $('state').textContent = '';
       }
 
       async function refresh() {
-        try {
-          catalog = await api('/api/apps/catalog');
-        } catch (e) {
-          note(e.message, 'bad');
-        }
-        // A host that cannot answer this is a host with nothing to report, not
-        // a broken Apps window: the panel simply does not appear. It is the
-        // one call here whose failure has an honest empty answer.
-        try {
-          deps = await api('/api/deps');
-        } catch (_) {
-          deps = { deps: [], manager: null };
-        }
-        await loadInstalled();
+        await loadLinks();
         if (live) render();
       }
 
-      async function removeApp(app) {
-        /* No "delete its data too" here, and there used to be one. A container
-           kept its state in a directory WebDesk made and could therefore
-           delete. This app keeps its state in ~/.var/app/<id>, in every user's
-           own home -- so there is no one directory to offer, and deleting
-           somebody's documents because an administrator took a tile out of a
-           dock is not on offer at any level of consent. */
+      async function add() {
+        const answer = await linkForm(null);
+        if (!answer) return;
+        try {
+          await jsonPost('/api/links', answer);
+          toast(`${answer.name} added.`);
+        } catch (e) {
+          toast(e.message, 'bad');
+        }
+        linksSig = '';
+        await refresh();
+      }
+
+      async function edit(link) {
+        const answer = await linkForm(link);
+        if (!answer) return;
+        try {
+          await api(`/api/links/${link.id}`, {
+            method: 'PUT',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(answer),
+          });
+        } catch (e) {
+          toast(e.message, 'bad');
+        }
+        // Whatever was showing the old address is showing the wrong page now.
+        for (const [id, w] of [...openWindows]) {
+          if (w.app === linkKey(link.id)) closeWindow(id);
+        }
+        linksSig = '';
+        await refresh();
+      }
+
+      async function remove(link) {
+        /* Asked, but only once and without ceremony. Removing a link deletes a
+           name and an address: nothing is uninstalled, no data is lost, and
+           putting it back is retyping one line. The Apps window this replaces
+           had to ask twice, because removing there took software off the
+           machine for every account on it. */
         const ok = await askConfirm(
-          `Remove ${app.name}?`,
-          'Its session stops and WebDesk lets it go. Your files stay where they are, ' +
-          'in your home directory.',
+          `Remove ${link.name}?`,
+          `It goes out of the dock. ${urlHost(link.url)} is not affected — nothing was ` +
+          'installed and nothing is running.',
           'Remove',
         );
         if (!ok) return;
-
-        const send = (acceptUninstall) =>
-          jsonPost('/api/apps/remove', {
-            slug: app.slug,
-            accept_uninstall: acceptUninstall,
-          });
-
-        let done = null;
         try {
-          done = await send(false);
+          await api(`/api/links/${link.id}`, { method: 'DELETE' });
+          toast(`${link.name} removed.`);
         } catch (e) {
-          /* Removing this one takes the application off the host, not just out
-             of WebDesk, and the host refuses until that is said out loud.
-
-             The dialog above asked about data on this machine. This asks about
-             something the dialog above could not have known to mention, and it
-             is the sentence that matters most in this window: stopping the unit
-             kills the Flatpak by application id, so anybody sitting at the
-             machine's own screen with it open loses it too. `detail` is the
-             host's own words for that and is shown rather than summarised --
-             it is why this is a second dialog and not a line of small print. */
-          const offer = e.body && e.body.offer;
-          if (!offer || !offer.uninstall) {
-            toast(e.message, 'bad');
-            await refresh();
-            return;
-          }
-          const ok = await askConfirm(
-            `Uninstall ${offer.uninstall}?`,
-            `${e.message}\n\n${offer.detail}`,
-            'Remove and uninstall',
-          );
-          if (!ok) {
-            note(`${app.name} was left alone. ${offer.detail}`);
-            return;
-          }
-          try {
-            done = await send(true);
-          } catch (e2) {
-            toast(e2.message, 'bad');
-          }
+          toast(e.message, 'bad');
         }
-        if (done) {
-          // The host says what it actually did, and that is more than this side
-          // can work out: whether the application itself went with the tile, or
-          // was one this machine already had and has been left alone.
-          toast(done.note || `${app.name} removed.`);
-        }
-        // Close any window still showing the app that has just gone.
         for (const [id, w] of [...openWindows]) {
-          if (w.app === appKey(app.slug)) closeWindow(id);
+          if (w.app === linkKey(link.id)) closeWindow(id);
         }
+        linksSig = '';
         await refresh();
       }
 
-      /* There is no form, and there used to be one.
-
-         Every question a container entry asked had one obviously right answer
-         for an application running on this host as this user: the clock is the
-         host's, the identity is yours, the files are already yours. So this is
-         a confirmation rather than a dialog to fill in -- the one fact worth
-         saying before several hundred megabytes are fetched is that the install
-         is host-wide and the running is not. */
-      async function install(app) {
-        const ok = await askConfirm(
-          `Install ${app.name}?`,
-          `${app.tagline}\n\nIt is installed on this host with flatpak, once for the whole ` +
-          'machine, and runs as you when you open it.',
-          'Install',
-          false,
-        );
-        if (!ok) return;
-        await attempt(app);
-      }
-
-      /* Sending the install, and answering the refusal that is answerable.
-
-         Separate from the confirmation above so it can be run a second time
-         after a dependency has been installed. A refusal that has been dealt
-         with has to end in the install actually happening, rather than in
-         somebody being sent back to press the same button again to find out
-         whether their consent worked. */
-      async function attempt(app) {
-        try {
-          await jsonPost('/api/apps/install', { slug: app.slug });
-        } catch (e) {
-          // An answerable refusal arrives as a 409 carrying `offer`, which
-          // names exactly what would be done and is put to the person who asked
-          // rather than being a dead end they have to go and read documentation
-          // about. Declining stops here.
-          const offer = e.body && e.body.offer;
-          if (!offer || !offer.deps) {
-            // The rest refuse with what to do about it, which is a paragraph
-            // and not a line -- too much for a toast that leaves.
-            note(e.message, 'bad');
-            toast(`${app.name} was not installed.`, 'bad');
-            return;
-          }
-
-          /* The host has not got what this entry needs to run at all -- a
-             compositor, an RFB server, or flatpak itself.
-
-             This is the moment to offer that, and the reason the Apps window
-             does not disable the button instead. Somebody pressing Install has
-             just said what they want; a greyed-out control at that moment
-             answers them with a fact about the host and no way to act on it,
-             and the panel at the top of this window that would have fixed it
-             is the thing they have already scrolled past. The keys in the
-             offer are the same keys /api/deps/install takes, so the fix is the
-             one already written below. */
-          const labels = offer.deps.map((d) => d.label);
-          const ok = await askConfirm(
-            `Install ${andList(labels)} first?`,
-            `${e.message}\n\n${offer.detail}`,
-            `Install ${andList(labels)}`,
-            false,
-          );
-          if (!ok) {
-            note(`${app.name} was not installed. ${offer.detail}`, 'bad');
-            return;
-          }
-          // And then carry on with the app that wanted them, rather than
-          // leaving somebody to press Install a second time.
-          installDeps(offer.deps.map((d) => d.key), () => attempt(app));
-          return;
-        }
-        $('log').hidden = false;
-        poll();
-      }
-
-      async function pollOnce() {
-        const d = await api('/api/apps/status');
-        const st = d.status || {};
-        const log = $('log');
-        if (d.log) {
-          const atEnd = log.scrollTop + log.clientHeight >= log.scrollHeight - 24;
-          log.textContent = d.log;
-          log.hidden = false;
-          if (atEnd) log.scrollTop = log.scrollHeight;
-        }
-        return st;
-      }
-
-      function stop() {
-        if (timer) clearTimeout(timer);
-        timer = null;
-      }
-
-      async function tick() {
-        if (!live) return;
-        let st;
-        try {
-          st = await pollOnce();
-        } catch (e) {
-          note(e.message, 'bad');
-          return;
-        }
-        if (st.state === 'running') {
-          // A several-hundred-megabyte download reported as "Working" reads as
-          // a hang, so the phase the host is in gets its own sentence.
-          const PHASES = {
-            downloading: (n) => `Downloading ${n}…`,
-            packages: () => 'Installing what it needs…',
-            recording: (n) => `Recording ${n}…`,
-          };
-          const phrase = PHASES[st.phase] || ((n) => `Installing ${n}…`);
-          // A dependency install comes through here too, and it is packages
-          // rather than an application, so it may have no name to put in a
-          // sentence. Saying "Working…" is better than saying "undefined".
-          $('state').textContent = st.name ? phrase(st.name) : 'Working…';
-          timer = setTimeout(tick, 1200);
-          return;
-        }
-        // Whatever was waiting for this one to finish. Taken before the
-        // refresh below, and cleared before it is run, so a job it starts owns
-        // the slot cleanly rather than inheriting a continuation of its own.
-        const next = after;
-        after = null;
-        if (st.state === 'failed') {
-          note(st.error || 'The install failed.', 'bad');
-          toast(`${st.name || 'Install'} failed.`, 'bad');
-        } else if (st.state === 'done') {
-          toast(st.name ? `${st.name} installed.` : 'Installed.');
-        }
-        stop();
-        await refresh();
-        // Only on the way that leads somewhere. Carrying on into an install
-        // that needed what has just failed to arrive would be a second failure
-        // reported as if it were news.
-        if (next && st.state === 'done') next();
-      }
-
-      function poll(then) {
-        stop();
-        after = then || null;
-        tick();
-      }
-
+      onTap(root.querySelector('[data-a="add"]'), add);
       onTap(root.querySelector('[data-a="refresh"]'), refresh);
-      entry.onClose = () => { live = false; stop(); };
-
-      refresh().then(() => {
-        // An install started from another window -- or before this one was
-        // opened -- is still worth following.
-        api('/api/apps/status')
-          .then((d) => { if ((d.status || {}).state === 'running') poll(); })
-          .catch(() => {});
-      });
+      entry.onClose = () => { live = false; };
+      refresh();
     },
   });
 }
@@ -3546,7 +3095,7 @@ document.getElementById('login-form').addEventListener('submit', async (e) => {
     await loadIcons();
     showDesktop();
     openFiles(STATE.home);
-    loadInstalled();
+    loadLinks();
   } catch (ex) {
     err.textContent = ex.message;
   } finally {
@@ -3557,8 +3106,8 @@ document.getElementById('login-form').addEventListener('submit', async (e) => {
 const APPS = {
   files: () => openFiles(STATE.home),
   terminal: () => openTerminal(),
-  // One Apps window is enough; a second would only disagree with the first.
-  apps: () => openSingleton('apps', openApps),
+  // One Links window is enough; a second would only disagree with the first.
+  links: () => openSingleton('links', openLinks),
 };
 
 document.querySelectorAll('.dock-btn[data-app]').forEach((b) => {
@@ -3686,11 +3235,12 @@ async function signOut() {
   try { await jsonPost('/api/logout', {}); } catch (_) {}
   STATE.username = null;
   STATE.admin = false;
-  // The next person to sign in gets this host's apps, not the last one's view
-  // of them.
-  installed = [];
-  installedSig = '';
-  const host = document.getElementById('installed');
+  // Links are per person as well as per host, so the next person to sign in
+  // must not inherit the last one's tiles even for the moment before the
+  // request answers.
+  links = [];
+  linksSig = '';
+  const host = document.getElementById('links');
   if (host) host.textContent = '';
   showLogin('Signed out.');
 }
@@ -3704,9 +3254,9 @@ async function signOut() {
     await loadIcons();
     showDesktop();
     openFiles(STATE.home);
-    // Not awaited: the dock fills in as soon as the host answers, and a host
-    // with nothing installed simply never adds anything.
-    loadInstalled();
+    // Not awaited: the dock fills in as soon as the host answers, and a desk
+    // with no links simply never adds anything.
+    loadLinks();
   } catch (_) {
     showLogin();
   }

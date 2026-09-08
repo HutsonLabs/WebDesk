@@ -62,7 +62,7 @@ function applyScene() {
     else if (app === 'terminal') opened.push(openTerminal());
     else if (app === 'editor') opened.push(openEditor('/home/hutson/README.md', 'i-readme'));
     else if (app === 'system') opened.push(openSingleton('system', openSystem));
-    else if (app === 'apps') opened.push(openSingleton('apps', openApps));
+    else if (app === 'links') opened.push(openSingleton('links', openLinks));
   }
 
   /* A window that has given its title bar back to what is inside it. Set on the

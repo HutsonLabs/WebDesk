@@ -1,71 +1,72 @@
-# Apps you supply a URL for
+# Links
 
-**Status: designed, not built.** This file is the design. Nothing in
-`src/` implements it yet, and the README says so in [Not built
-yet](../README.md#not-built-yet).
+*Applications this desk points at rather than ones it runs.*
+
+**Built.** `src/links.rs` is the server, `ui/app.js` the window and the tile.
+This document is what the design was and what it became; where the two differ,
+the code is right and this says which decisions moved.
 
 ---
 
-## What this replaces, and why it is not the same thing
+## What this replaces
 
-WebDesk used to be able to run a web application for you. It kept a fixed list
-of container images, pulled one, created a container, published it on a loopback
-port, and reverse-proxied it onto its own origin at `/app/<slug>/`. That is gone
-— the engine, the proxy, the port allocator, the bind mounts and the catalog
-entries that described them.
+WebDesk tried twice to run applications for you, and both attempts are gone.
 
-The proximate reason it went is that it cost far more than it looked like it
-cost. A container entry had to answer for a published port, a state directory,
-`PUID`/`PGID`, a shared-memory size, a clock, a render node, and whether the
-application would survive being served under a path prefix. The last of those
-decided membership: an application that assumed it owned `/` emitted
-root-absolute links, escaped its prefix, and rendered as a blank frame. So the
-question "should this be in the catalog" was mostly the question "can this be
-made to work behind our proxy", which is a question about our proxy and not
+**Containers.** A fixed list of images in the binary. Install pulled one, created
+a container, published it on a loopback port and reverse-proxied it onto
+WebDesk's own origin at `/app/<slug>/`. That cost a container engine to detect
+and drive, a port allocator, a bind-mount validator, `PUID`/`PGID`, a shared
+memory size, a render-node passthrough, a cookie rewriter and an
+`X-Forwarded-Prefix` convention. And it cost a rule: an entry had to work when
+served under a path prefix, so "can this app live at `/app/<slug>/`" decided what
+could be in the catalog at all -- a question about WebDesk's proxy rather than
 about the application.
 
-The deeper reason is that it was the wrong job. A host that runs WebDesk very
-often already runs things — with Compose, with systemd units, with a package
-manager, behind a reverse proxy somebody already configured. WebDesk running a
-*second*, smaller, less capable copy of that machinery, for a hardcoded list of
-nine images, was competing with the operator's own tooling and losing.
+**Streamed Flatpaks.** A fixed list of application ids. Install put one on the
+host with `flatpak --system`; opening it started a headless compositor and an RFB
+server in the opener's own systemd user session and carried the pixels to a
+canvas. Simpler than a container in every way that mattered, and it needed
+`flatpak`, `sway` or `cage`, and `wayvnc` on the host. On Enterprise Linux 9 --
+which is what the deployment host turned out to be -- no compositor is packaged
+in any repository at any version, so the entire catalog was uninstallable there.
+An arrangement that depends on three host packages is an arrangement that does
+not work on the host you have.
 
-**So the replacement is not "run my container". It is "I already run this
-somewhere; put it on the desk."** You supply a URL. WebDesk stores it, draws a
-tile for it, and opens a window with that page in it.
+Both were WebDesk running a smaller, worse copy of machinery the operator already
+had. A machine that runs this very often already runs things: with Compose, with
+units, behind a reverse proxy somebody configured years ago.
 
-That is a much smaller thing than what it replaces, and the smallness is the
-feature. It is worth being precise about how much smaller:
+**So the answer is: run it yourself, and tell the desk where it is.**
 
-| | the container apps | a URL app |
-| --- | --- | --- |
-| what WebDesk runs | a container, as root | nothing |
-| what WebDesk fetches | a multi-gigabyte image | nothing |
-| what WebDesk proxies | every request and websocket | nothing |
-| what the catalog constrains | which images may run | nothing — it is not a catalog entry |
-| who may add one | nobody; it was fixed in the binary | you, for yourself |
-| what a bad entry can do to the host | run arbitrary code as root | nothing |
+| | the containers | the streamed apps | a link |
+| --- | --- | --- | --- |
+| what WebDesk runs | a container, as root | a compositor and a Flatpak, as you | nothing |
+| what it fetches | a multi-gigabyte image | a few hundred megabytes | nothing |
+| what it needs on the host | a container engine | flatpak, a compositor, wayvnc | nothing |
+| what it proxies | every request and websocket | RFB over a unix socket | nothing |
+| who may add one | nobody; fixed in the binary | nobody; fixed in the binary | you |
+| what a bad entry does to the host | runs code as root | runs code as you | nothing |
 
-The last row is the one that changes the design. The catalog is fixed in the
-binary because "the set of things that may be run on this host is a property of
-the build" — a container is a way to run arbitrary code as whoever owns the
-engine, so the list of them is reviewed like code. **A URL app runs nothing.**
-Your browser fetches a page from a server you named. WebDesk executes no code,
-installs no software, opens no port and makes no outbound request. The whole
-argument that keeps the catalog closed simply does not reach this, which is
-exactly why this can be the thing users add and the catalog cannot.
+The last row is the one that changes the design. The catalog lived in the binary
+because running a container is a way to run arbitrary code as whoever owns the
+engine, so the set of them had to be a property of the build. **A link runs
+nothing.** Your browser fetches a page from a server you named. WebDesk executes
+no code, installs no software and opens no port. The argument that kept the
+catalog closed does not reach it, which is exactly why this is the thing users
+may add and the catalog was not.
 
-**WebDesk must never fetch the URL.** That is the single most important line in
-this design and it is worth stating as a rule rather than leaving as an
-implementation detail. A server-side fetch would be a server-side request
-forgery primitive handed to every signed-in user: `http://169.254.169.254/`,
-`http://127.0.0.1:2375/`, every service on every network this host can see but
-you cannot. It would also drag back the whole proxy — cookie rewriting, header
-rewriting, prefix negotiation, TLS to an upstream — which is what was just
-deleted. The browser fetches it. That is not a compromise; it is the reason this
-design is three hundred lines and the thing it replaces was three thousand.
+## The rule everything else hangs on
 
----
+**WebDesk never fetches the URL.** Not to check it is alive, not to fetch a
+favicon, not to proxy it. There is no HTTP client in `src/links.rs` and there
+must never be one.
+
+A server-side fetch would be a request-forgery primitive handed to every
+signed-in session: `http://169.254.169.254/`, `http://127.0.0.1:2375/`, every
+service on every network this host can see and the person at the keyboard cannot.
+It would also drag back the whole proxy that was just deleted -- cookie
+rewriting, header rewriting, prefix negotiation, TLS to an upstream. The browser
+fetches it. That is not a compromise; it is why this feature is one file.
 
 ## The shape of one
 
@@ -92,7 +93,7 @@ though a typed slug would be prettier. The alternative is a validation rule, a
 collision refusal, and a failure mode where an upgrade quietly repoints an icon.
 
 `open` is `frame` or `tab`, and see [How it renders](#how-it-renders) for why it
-is a stored per-app choice rather than a global preference or a guess.
+is a stored per-link choice rather than a global preference or a guess.
 
 `scope` is `me` or `host`, and see [Two scopes](#two-scopes-and-only-one-of-them-needs-new-privilege).
 
@@ -114,7 +115,7 @@ It also needs **no new privileged code in WebDesk**, which is the part of this
 design worth arguing for. The store is a file in your own home:
 
 ```
-~/.config/webdesk/urlapps.json
+~/.config/webdesk/links.json
 ```
 
 and it is written the way every other file in your home is written — through the
@@ -135,7 +136,7 @@ An operator who runs six internal tools does not want six people each adding six
 tiles. So an administrator may publish one, and it appears for everybody:
 
 ```
-/var/lib/webdesk/urlapps.json
+/var/lib/webdesk/links.json
 ```
 
 This one *is* a new privileged write — it is root-owned state that changes what
@@ -263,10 +264,9 @@ site the way you would in any tab, and your browser keeps that cookie for it
 afterwards.
 
 This is a real behavioural difference from what it replaces and belongs in the
-Apps window's own prose, not only here. It is also the correct behaviour: the
+form's own prose, not only here. It is also the correct behaviour: the
 alternative — WebDesk holding credentials for third-party services — is a
-password manager, and there is [one of those in the
-catalog](../README.md#apps-drawn-on-this-host).
+password manager, and writing one of those was never on offer.
 
 ---
 
@@ -344,50 +344,89 @@ fallback. Not a host-side fetch — see the rule above.
 ## Routes
 
 ```
-GET    /api/urlapps            merged list: host-wide, then this session's own
-POST   /api/urlapps            {name, url, icon, open, width, height, scope}
-PUT    /api/urlapps/{id}       same body; only the fields sent are changed
-DELETE /api/urlapps/{id}
+GET    /api/links            merged list: host-wide first, then this session's own
+POST   /api/links            {name, url, icon, open, width, height, scope}
+PUT    /api/links/{id}       the same body; the id, the added time and the
+                             original author are kept
+DELETE /api/links/{id}
 ```
 
-Any session may call all four for `scope: "me"`. `scope: "host"` requires the
-administrative group, checked on the route.
+Any session may call all four for its own links. `scope: "host"` on create, and
+any write to a host-wide link, require the administrative group -- checked on the
+route, not on the button.
 
-`GET /api/apps/list` does **not** grow a second kind. URL apps are not installed
-apps: nothing about them involves Flatpak, a user unit, an RFB socket or a state
-word, and folding them into that response would mean every consumer of it
-branching on a kind again — which is the shape this whole change removed. They
-are a separate list, and the dock concatenates two lists, which is a line of
-JavaScript.
+`GET /api/links` answers `{links, admin, icons}`. `icons` is the allow-list the
+form draws its picker from, sent rather than hardcoded in the browser so the two
+cannot disagree about what the sprite has. Each link carries `scope` and
+`editable`; `editable` is a property of the *pair* -- this link, this session --
+and is computed on the server so the browser is not left inferring it from two
+other fields.
 
----
-
-## What the UI gains
-
-- **Apps window**: a third group, *Links*, under *Installed* and *Available*,
-  with an **Add a link** button. Rows show the name, the host part of the URL,
-  and whether it opens framed or in a tab. Host-wide entries are marked as such
-  and are only editable by an administrator.
-- **Dock**: a tile each, after the installed apps.
-- **Window**: for `frame`, an iframe with a Reload and an Open-in-a-tab button
-  in the title bar — which is what `frameApp` did before it was deleted, and
-  `git show HEAD~1:ui/app.js` is where to read it. For `tab`, clicking the tile
-  opens the tab and no window is created at all.
+There is no second list and no kind flag anywhere. The dock draws Files,
+Terminal and then these.
 
 ---
 
-## Open questions
+## What the UI does
 
-Worth deciding before building rather than during.
+- **Links window** (the dock's third built-in): a list, an **Add a link**
+  button, and Open / Edit / Remove on each row. A row says the address, whether
+  it opens framed or in a tab, and -- only when it is shared -- that everyone on
+  this host sees it. `editable` decides whether Edit and Remove are drawn.
+- **The form** is one dialog for adding and editing. Under the address is a live
+  line that says the two things a person cannot see for themselves: what a
+  scheme-less entry will be turned into, and that an `http://` page cannot be
+  framed on an https desk. When the address is loopback it adds the warning
+  below, which is the one that catches people out.
+- **Dock**: a tile each, after Files and Terminal. Alt- or middle-click opens it
+  in a tab whatever the link says, which is the ordinary browser gesture and is
+  also the fastest way out of a page that will not frame.
+- **Window**: one iframe, with Reload and Open-in-a-tab in the title bar from the
+  first frame rather than appearing with the failure message.
 
-1. **Should a host-wide entry be hideable per user?** An operator publishes six
-   tiles; somebody uses two. A per-user hidden list in the personal store is four
-   lines and prevents the dock becoming somebody else's opinion. Probably yes.
-2. **Ordering.** Alphabetical is predictable; drag-to-reorder is what people
-   want the moment there are more than about five. Alphabetical first.
-3. **Import.** An operator with twenty internal tools will want to paste a list
-   rather than fill a form twenty times. A textarea of `name<tab>url` lines is
-   the cheap version and can wait for somebody to ask.
-4. **What happens to a URL app whose site has gone.** Nothing detectable from
-   here, by the same argument as the frame refusal. Probably nothing should
-   happen: a bookmark to a dead site is an ordinary thing to have.
+### `localhost` means the browser's machine
+
+The sharpest thing about this feature and the least obvious. WebDesk stores the
+address; *your browser* fetches it. So `http://localhost:8096` is Jellyfin on the
+machine you are sitting at, not on the machine WebDesk runs on. That is right
+when you are at the server and silently wrong from anywhere else, and the symptom
+is a tile that works for one person and not for another.
+
+The form says so as you type it. It is not refused, because browsing from the
+host itself is a real thing to do.
+
+---
+
+## What moved between the design and the code
+
+- **The store is `links.json`, not `urlapps.json`**, and the routes are
+  `/api/links`. "URL app" was a phrase for a thing that did not exist yet; once
+  it existed it was a link.
+- **Removal asks once, without ceremony**, where the design left it open.
+  Removing a link deletes a name and an address: nothing is uninstalled, nothing
+  is lost, and putting it back is retyping one line.
+- **Scheme detection is not the obvious regex.** `/^[a-z][a-z0-9+.-]*:/` matches
+  `localhost:8096` -- the commonest input this feature has -- and reads
+  `localhost` as the scheme. A bare `word:` is a scheme only when what follows is
+  not a port number. Getting this wrong meant nothing was prepended and the
+  server refused the address the user most wanted to add.
+- **A hostile scheme is passed through unchanged rather than prefixed.**
+  `javascript:alert(1)` could have had `https://` put in front of it, which would
+  have made it harmless and also incomprehensible. It goes to the server as
+  typed, and the server refuses it by name.
+
+---
+
+## Still open
+
+1. **Should a host-wide link be hideable per user?** An operator publishes six
+   tiles; somebody uses two. A per-user hidden list in the personal store is a
+   few lines and stops the dock becoming somebody else's opinion.
+2. **Ordering.** Host-wide first, then personal, each in the order added.
+   Alphabetical is predictable; drag-to-reorder is what people want the moment
+   there are more than about five.
+3. **Import.** Twenty internal tools is twenty passes through the form. A
+   textarea of `name<tab>url` lines is the cheap version.
+4. **A link whose site has gone.** Not detectable from here, by the same argument
+   as the frame refusal, and probably nothing should happen: a bookmark to a dead
+   site is an ordinary thing to have.

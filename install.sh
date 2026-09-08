@@ -25,7 +25,6 @@ _in_updates=${WD_UPDATE:-}
 _in_tls=${WD_TLS:-}
 _in_tls_cert=${WD_TLS_CERT:-}
 _in_tls_key=${WD_TLS_KEY:-}
-_in_apps=${WD_APPS:-}
 
 CONF_DIR=${CONF_DIR:-/etc/webdesk}
 CONF=$CONF_DIR/install.conf
@@ -50,50 +49,22 @@ REF=${_in_ref:-${WD_REF:-main}}
 SRC_DIR=${_in_src_dir:-${WD_SRC_DIR:-/usr/local/src/webdesk}}
 ADMIN_GROUPS=${_in_admin:-${WD_ADMIN_GROUPS:-wheel,sudo}}
 UPDATES=${_in_updates:-${WD_UPDATE:-on}}
-# Which kinds of app this host should be provisioned to run, as a comma list of
-# the group names src/deps.rs reports -- streamed, host -- or `all`.
+# WD_APPS is gone, and so is everything it provisioned.
 #
-# Empty by default, and that default is the point. A WebDesk install adds
-# WebDesk: a binary, a unit, a PAM file and this conf. A host that will only
-# ever want the file manager and the terminal has no business carrying a
-# compositor or a Cockpit bridge because the installer assumed it might.
-# Anything named here is installed once, at install time; the rest is reported
-# at the end and offered in the Apps window, where it is one press for a member
-# of $ADMIN_GROUPS.
+# It named the kinds of app this host should be made able to run -- a container
+# engine, then a compositor and an RFB server, then a Cockpit bridge -- because
+# WebDesk used to run applications itself, and each way of doing that needed
+# software on the host that WebDesk is not. It does not run applications any
+# more. An app on this desk is either built in -- Files, Terminal -- or it is a
+# URL somebody typed, and a URL needs nothing installed anywhere.
 #
-# The words are the words the API uses, not a second vocabulary for the same
-# things. There were three groups and `containers` was one of them; it went with
-# the container entries, and a WD_APPS that still names it now fails the check
-# below rather than silently installing a container engine nothing would use.
-APPS=${_in_apps:-${WD_APPS:-}}
+# So this installer installs WebDesk and stops: a binary, a unit, a PAM file and
+# a conf. That was always the default; there is now no other option to offer,
+# and no closing summary of what the host is still missing, because it is not
+# missing anything. A WD_APPS left in an older install.conf is read and ignored.
 
 need_root() { [ "$(id -u)" -eq 0 ] || { echo "run as root (sudo $0)"; exit 1; }; }
 need_root
-
-ALL_GROUPS="streamed host"
-
-# Checked here, before anything is downloaded or built, because the failure this
-# prevents is silent: `WD_APPS=desktops` is not an error anywhere downstream, it
-# simply matches no group, installs nothing, and leaves an operator who asked
-# for a compositor looking at an Apps window that says there is none.
-#
-# Named APP_GROUPS and not GROUPS: bash owns GROUPS, keeps the invoking user's
-# gids in it, and quietly discards an assignment to it. The first version of
-# this read `WD_APPS=all` and then provisioned group "1000", which is not a
-# group and would have exited on the operator's own gid.
-APP_GROUPS=""
-case $APPS in
-  ""|none) ;;
-  all) APP_GROUPS=$ALL_GROUPS ;;
-  *)
-    for g in $(echo "$APPS" | tr ',' ' '); do
-      case " $ALL_GROUPS " in
-        *" $g "*) APP_GROUPS="$APP_GROUPS $g" ;;
-        *) echo "WD_APPS: '$g' is not a group. Choose from: $ALL_GROUPS, or all"; exit 1 ;;
-      esac
-    done
-    ;;
-esac
 
 echo "==> detecting distribution"
 if command -v apt-get >/dev/null 2>&1; then
@@ -212,7 +183,6 @@ WD_UPDATE=$UPDATES
 WD_TLS=$TLS
 WD_TLS_CERT=$TLS_CERT
 WD_TLS_KEY=$TLS_KEY
-WD_APPS=$APPS
 CONFEOF
 chmod 0644 "$CONF"
 
@@ -291,151 +261,6 @@ elif command -v ufw >/dev/null 2>&1 && ufw status | grep -q '^Status: active'; t
   ufw allow "$PORT"/tcp >/dev/null && echo "    opened $PORT/tcp (ufw)"
 else
   echo "    no active firewall detected; nothing to open"
-fi
-
-# ---------------------------------------------------------------- app runtimes
-#
-# What a group costs on this family, as package names. This duplicates the table
-# in src/deps.rs, and it has to: the binary that owns that table is not built yet
-# when this runs, and on a cold host it will not be for another few minutes. So
-# the copy is made cheap to check instead -- a test in src/deps.rs reads these
-# very lines and fails the build if the two ever disagree about a name, or about
-# whether a group can be provisioned here at all. Which means the shape of these
-# arms is load-bearing: one arm per line, and the packages in double quotes.
-#
-# An empty answer is not an omission. It means this project has no honest package
-# name for that group on this family, and the summary below says which and why
-# rather than running a package manager against a guess.
-wd_group_packages() {
-  case "$1:$2" in
-    streamed:debian)   echo "flatpak sway wayvnc" ;;
-    streamed:arch)     echo "flatpak sway wayvnc" ;;
-    # `dnf` alone does not say enough here, and this script has not got enough to
-    # find out with. On Fedora cage and wayvnc are in the base repositories; on
-    # Enterprise Linux they are in EPEL, which is a third-party repository this
-    # installer will not enable on somebody's host -- and on EL9 there is no cage
-    # build at any version, so there is nothing to enable EPEL *for*. Flatpak is
-    # the part that is right on all three, so that is the part that is installed;
-    # the summary below reads /etc/os-release and says which of the three this is,
-    # and src/deps.rs makes the rest one press for whoever is looking at it.
-    streamed:rhel)     echo "flatpak" ;;
-    host:debian)       echo "cockpit-bridge" ;;
-    host:rhel)         echo "cockpit-bridge" ;;
-    # Arch has no bridge package apart from `cockpit`, which is all of Cockpit
-    # including the web server. The Apps window offers it anyway, with the cost in
-    # the sentence beside the button -- but a comma in WD_APPS is not somebody
-    # reading that sentence, so this installs nothing and the summary says why.
-    host:arch)         echo "" ;;
-    *) echo "" ;;
-  esac
-}
-
-if [ -n "$APP_GROUPS" ]; then
-  echo "==> provisioning app runtimes ($(echo "$APP_GROUPS" | tr -s ' ' | sed 's/^ //;s/ /, /g'))"
-  WANT=""
-  for g in $APP_GROUPS; do
-    WANT="$WANT $(wd_group_packages "$g" "$FAMILY")"
-  done
-  # shellcheck disable=SC2086
-  WANT=$(echo $WANT | tr ' ' '\n' | sort -u | tr '\n' ' ')
-  if [ -z "$(echo "$WANT" | tr -d ' ')" ]; then
-    echo "    nothing this installer can name on $FAMILY; see the summary below"
-  else
-    echo "    $WANT"
-    # Not fatal. WebDesk itself is already installed and running by this point,
-    # and a host that cannot reach a mirror should end up with a working desk and
-    # a note about what is missing, not with `set -e` killing the script two
-    # lines before it would have told anybody anything.
-    # $WANT is a list and has to split into separate arguments; every word in it
-    # came from the table above and never from the caller.
-    case $FAMILY in
-      debian)
-        # shellcheck disable=SC2086
-        apt-get install -y -qq $WANT || echo "    !! some packages did not install" ;;
-      rhel)
-        # shellcheck disable=SC2086
-        dnf install -y -q $WANT || echo "    !! some packages did not install" ;;
-      arch)
-        # shellcheck disable=SC2086
-        pacman -Sy --needed --noconfirm $WANT || echo "    !! some packages did not install" ;;
-    esac
-  fi
-fi
-
-# What is still missing and what it costs, whether or not anything was asked for
-# -- an operator who installed with the default wants this most of all, and one
-# who asked for a group wants to know it did not arrive.
-#
-# Probed by binary rather than by asking the package manager: the binary is what
-# a compositor or an engine actually needs, it is spelled the same everywhere,
-# and a host where somebody built one from source has it however the package
-# database feels about it.
-have() { command -v "$1" >/dev/null 2>&1; }
-
-# One field out of /etc/os-release, without sourcing it -- that file sets NAME,
-# VERSION and half a dozen other common words, and this script has its own.
-os_field() { sed -n "s/^$1=\"\\?\\([^\"]*\\)\"\\?\$/\\1/p" /etc/os-release 2>/dev/null | head -1; }
-# The Enterprise Linux generation, or 0 for Fedora. Only asked once FAMILY is
-# rhel, because that is the one place `dnf` turns out to be three package
-# universes and the generation is what tells them apart.
-el_major() {
-  [ "$(os_field ID)" = fedora ] && { echo 0; return; }
-  m=$(os_field VERSION_ID | cut -d. -f1)
-  case $m in ''|*[!0-9]*) echo 0 ;; *) echo "$m" ;; esac
-}
-
-MISSING=""
-# A compositor is either of two, and sway is the one that can resize its output.
-{ have flatpak && have wayvnc && { have sway || have cage; }; } || MISSING="$MISSING streamed"
-have cockpit-bridge || MISSING="$MISSING host"
-
-if [ -n "$MISSING" ]; then
-  echo
-  echo "this host is not yet set up to run some kinds of app:"
-  for g in $MISSING; do
-    case $g in
-      streamed)
-        LACK=
-        have flatpak || LACK="$LACK flatpak"
-        have sway || have cage || LACK="$LACK sway"
-        have wayvnc || LACK="$LACK wayvnc"
-        printf '  - missing%s. Apps that run on this host and are streamed\n' "$LACK"
-        echo "    into the browser will not install until these are here."
-        # Present but the wrong one: everything works and nothing resizes, which
-        # is worth a sentence because the symptom -- a window that will not
-        # follow a drag -- looks like a bug rather than a missing package.
-        if have cage && ! have sway; then
-          echo "    cage is here and sway is not. Drawn apps will run, and will be fixed at"
-          echo "    1280x720 with the browser scaling them: cage cannot resize its output."
-          echo "    Install sway for a resolution that follows the window."
-        fi
-        if [ "$FAMILY" = rhel ] && ! have sway && ! have cage; then
-          if [ "$(os_field ID)" = fedora ]; then
-            echo "    Fedora has both in its base repositories; the Apps window will install"
-            echo "    them in one press."
-          elif [ "$(el_major)" -ge 10 ]; then
-            echo "    Both come from EPEL here, not from any base repository. Enable EPEL --"
-            echo "    which WebDesk will not do to your host for you -- and the Apps window"
-            echo "    will install them in one press."
-          else
-            echo "    EPEL never built cage for Enterprise Linux $(el_major); it starts at 10. There is"
-            echo "    no compositor package to install under any name, so no app in the"
-            echo "    catalog can run on this release. The host panels still work."
-          fi
-        fi ;;
-      host)
-        echo "  - no cockpit-bridge. The Services, Logs and Metrics panels will stay empty."
-        if [ "$FAMILY" = arch ]; then
-          echo "    Arch has no bridge package apart from \`cockpit\`, which is all of Cockpit"
-          echo "    including its web server. The Apps window will offer it, with that cost"
-          echo "    stated; this installer will not make that choice from a comma in WD_APPS."
-        fi ;;
-    esac
-  done
-  echo
-  RERUN=$(echo "$MISSING" | tr -s ' ' | sed 's/^ //;s/ /,/g')
-  echo "none of this needs a shell: sign in, open Apps, and anyone in $ADMIN_GROUPS can"
-  echo "install any of it in one press. Or re-run this installer with WD_APPS=$RERUN."
 fi
 
 echo
