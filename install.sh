@@ -51,30 +51,31 @@ SRC_DIR=${_in_src_dir:-${WD_SRC_DIR:-/usr/local/src/webdesk}}
 ADMIN_GROUPS=${_in_admin:-${WD_ADMIN_GROUPS:-wheel,sudo}}
 UPDATES=${_in_updates:-${WD_UPDATE:-on}}
 # Which kinds of app this host should be provisioned to run, as a comma list of
-# the group names src/deps.rs reports -- containers, streamed, host -- or `all`.
+# the group names src/deps.rs reports -- streamed, host -- or `all`.
 #
 # Empty by default, and that default is the point. A WebDesk install adds
 # WebDesk: a binary, a unit, a PAM file and this conf. A host that will only
 # ever want the file manager and the terminal has no business carrying a
-# container engine, a compositor or a Cockpit bridge because the installer
-# assumed it might. Anything named here is installed once, at install time; the
-# rest is reported at the end and offered in the Apps window, where it is one
-# press for a member of $ADMIN_GROUPS.
+# compositor or a Cockpit bridge because the installer assumed it might.
+# Anything named here is installed once, at install time; the rest is reported
+# at the end and offered in the Apps window, where it is one press for a member
+# of $ADMIN_GROUPS.
 #
 # The words are the words the API uses, not a second vocabulary for the same
-# three things -- `desktops` was the obvious alternative and is the wrong one,
-# because catalog.rs already spells the *container* desktop entries with it.
+# things. There were three groups and `containers` was one of them; it went with
+# the container entries, and a WD_APPS that still names it now fails the check
+# below rather than silently installing a container engine nothing would use.
 APPS=${_in_apps:-${WD_APPS:-}}
 
 need_root() { [ "$(id -u)" -eq 0 ] || { echo "run as root (sudo $0)"; exit 1; }; }
 need_root
 
-ALL_GROUPS="containers streamed host"
+ALL_GROUPS="streamed host"
 
 # Checked here, before anything is downloaded or built, because the failure this
 # prevents is silent: `WD_APPS=desktops` is not an error anywhere downstream, it
 # simply matches no group, installs nothing, and leaves an operator who asked
-# for a container engine looking at an Apps window that says there is none.
+# for a compositor looking at an Apps window that says there is none.
 #
 # Named APP_GROUPS and not GROUPS: bash owns GROUPS, keeps the invoking user's
 # gids in it, and quietly discards an assignment to it. The first version of
@@ -307,21 +308,6 @@ fi
 # rather than running a package manager against a guess.
 wd_group_packages() {
   case "$1:$2" in
-    # Docker, and only Docker. It is the engine this project was written against
-    # and tested with, and it is in Debian's and Arch's own repositories under a
-    # name each. On the RHEL family it is in neither -- Fedora's `moby-engine` is
-    # a fork and Enterprise Linux has nothing at all, so both roads end at
-    # Docker's own repository and key, which is a supply-chain decision an
-    # operator makes and not one an installer makes for them. That family gets
-    # nothing here and a sentence below saying why.
-    #
-    # Podman is deliberately not an answer to this knob, though WebDesk will use
-    # it perfectly happily if the host already has it. Installing an engine is
-    # recommending one, and the README still says Podman is accepted but
-    # untested; using what somebody already chose claims nothing.
-    containers:debian) echo "docker.io" ;;
-    containers:rhel)   echo "" ;;
-    containers:arch)   echo "docker" ;;
     streamed:debian)   echo "flatpak sway wayvnc" ;;
     streamed:arch)     echo "flatpak sway wayvnc" ;;
     # `dnf` alone does not say enough here, and this script has not got enough to
@@ -399,7 +385,6 @@ el_major() {
 }
 
 MISSING=""
-have docker || have podman || MISSING="$MISSING containers"
 # A compositor is either of two, and sway is the one that can resize its output.
 { have flatpak && have wayvnc && { have sway || have cage; }; } || MISSING="$MISSING streamed"
 have cockpit-bridge || MISSING="$MISSING host"
@@ -409,21 +394,6 @@ if [ -n "$MISSING" ]; then
   echo "this host is not yet set up to run some kinds of app:"
   for g in $MISSING; do
     case $g in
-      containers)
-        echo "  - no container engine. The desktop entries and the editor will not"
-        echo "    install until there is one."
-        # The RHEL family is the case where WD_APPS=containers cannot have done
-        # anything, so it gets the reason rather than a repeat of the headline.
-        if [ "$FAMILY" = rhel ]; then
-          echo "    Docker is not in this family's repositories -- Fedora's moby-engine is"
-          echo "    a fork, and Enterprise Linux has neither -- so installing it means"
-          echo "    adding Docker's own repository and key, which this installer will not"
-          echo "    do to your host. Add it yourself, or install podman: WebDesk uses"
-          echo "    podman when it is already here, it just will not put it there."
-        else
-          echo "    WebDesk offers Docker, which is the engine it was tested with. It will"
-          echo "    also use podman if you install that yourself."
-        fi ;;
       streamed)
         LACK=
         have flatpak || LACK="$LACK flatpak"
@@ -449,8 +419,8 @@ if [ -n "$MISSING" ]; then
             echo "    will install them in one press."
           else
             echo "    EPEL never built cage for Enterprise Linux $(el_major); it starts at 10. There is"
-            echo "    no compositor package to install under any name, so streamed apps are"
-            echo "    not available on this release. Container apps and the host panels are."
+            echo "    no compositor package to install under any name, so no app in the"
+            echo "    catalog can run on this release. The host panels still work."
           fi
         fi ;;
       host)

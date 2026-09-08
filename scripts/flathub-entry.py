@@ -4,18 +4,19 @@
     scripts/flathub-entry.py org.gimp.GIMP org.kde.krita
     scripts/flathub-entry.py --search "photo editor"
 
-A streamed entry is short enough that typing one is not the hard part. A
-container entry has to answer for a published port, a state directory,
-`PUID`/`PGID`, a shared memory size, a clock, a render node and whether the
-application survives a path prefix -- seven questions with lookup-able answers.
-A streamed entry answers none of them, because the application is already
-running as the right user on the right machine. What is left is a judgement
-call, so this prints what the judgement needs and then the entry.
+An entry is short enough that typing one is not the hard part. The container
+entries this catalog used to carry had to answer for a published port, a state
+directory, `PUID`/`PGID`, a shared memory size, a clock, a render node and
+whether the application survived a path prefix -- seven questions with
+lookup-able answers, and the reason those entries are gone. An entry here
+answers none of them, because the application is already running as the right
+user on the right machine. What is left is a judgement call, so this prints what
+the judgement needs and then the entry.
 
 **Size is the part that has already decided a catalog question once.**
 `intellij-idea` was dropped on size alone: nothing about it was broken, it
 simply unpacks to roughly 9 GB, which was more than the free space on the
-filesystem the engine stores images in -- so the entry most likely to fail its
+filesystem images were stored on -- so the entry most likely to fail its
 own install was also the one whose failure would take the rest of the machine
 down with it. Flatpaks are smaller than desktop images, and a runtime is shared
 by every application built on it, so the second GNOME app on a host costs its

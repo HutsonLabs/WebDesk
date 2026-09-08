@@ -1,35 +1,33 @@
-//! Flatpak, for the applications this host runs rather than containerises.
+//! Flatpak, for the applications this host runs.
 //!
-//! `engine.rs` runs containers and `systemd.rs` runs units; this is the third
-//! thing an application on the host can need, and it sits between them. The
-//! Flatpak is *what* runs -- the binary the unit's `ExecStart` names -- so it
-//! has to be on the machine before the unit is ever started, or the service is
-//! written, enabled, and dead within a second, with nothing in the Apps window
-//! saying why.
+//! `systemd.rs` runs the unit; this is what the unit's `ExecStart` names. The
+//! application has to be on the machine before that unit is ever started, or the
+//! service starts and is dead within a second with nothing in the Apps window
+//! saying why -- so putting it there is a step of its own, before any record is
+//! written.
 //!
-//! **Nothing here takes a name from a request.** The application id, the
-//! repository the bundle comes from and the host packages that may be
-//! installed are all `&'static str` in `catalog.rs`, for the same reason a unit
-//! name is: a request that could name a package is a request that can install
-//! anything, which is a larger hole than any container in this catalog.
+//! **Nothing here takes a name from a request.** The application id and the
+//! repository a bundle comes from are `&'static str` in `catalog.rs`, for the
+//! same reason a unit template is a constant: a request that could name an
+//! application is a request that can install anything.
 //!
-//! **Two sources, and they make installing mean two different things.** This
-//! module once said flatly that there was no remote to update from, which was
-//! true while term.hut was the only Flatpak in the catalog and stopped being
-//! true the moment the streamed shelf arrived. Most entries now name a Flathub
-//! id, and for those the remote *is* the mechanism: `flatpak install` puts the
-//! application on the host and `flatpak update` upgrades it, with no version to
-//! work out here, no asset to find and nothing per-entry to configure. That is
-//! the reason the shelf in `catalog.rs` could grow as fast as it did -- an
-//! entry costs an id.
+//! **Two sources, and they make installing mean two different things.** Every
+//! shipping entry names a Flathub id, and for those the remote *is* the
+//! mechanism: `flatpak install` puts the application on the host and
+//! `flatpak update` upgrades it, with no version to work out here, no asset to
+//! find and nothing per-entry to configure. That is the reason the shelf in
+//! `catalog.rs` could grow as fast as it did -- an entry costs an id.
 //!
-//! term.hut is the exception, and not by preference. Its bundles are built with
-//! `flatpak build-bundle` and no `--runtime-repo`, so the installed app reports
-//! an origin that `flatpak remotes` has never heard of and `flatpak update`
-//! answers "Nothing to do" forever. For that entry there really is no remote to
-//! update from: installing is downloading a file and so is upgrading, which is
-//! why `newest_bundle` exists rather than a one-line install against a remote,
-//! and why it walks the releases instead of trusting `latest`.
+//! A **bundle** is the other source, and nothing ships as one today. It is kept
+//! because the difference is not cosmetic and rediscovering it would be
+//! expensive. A Flatpak built with `flatpak build-bundle` and no
+//! `--runtime-repo` reports an origin that `flatpak remotes` has never heard of,
+//! so `flatpak update` answers "Nothing to do" forever. For an application
+//! published that way there really is no remote to update from: installing is
+//! downloading a file and so is upgrading, which is why `newest_bundle` exists
+//! rather than a one-line install against a remote, and why it walks the
+//! releases instead of trusting `latest`. `term-hut-host` was the entry that
+//! needed it; it went with the host-service kind, and this did not.
 //!
 //! `provide` and `update` are where the two meet. The installer asks for the
 //! application and is not told which kind it got, because the difference is
@@ -37,8 +35,8 @@
 //! host afterwards -- and an installer that had to know would grow the same
 //! two-branch decision a second time, in a file that has no reason to hold it.
 
-use crate::catalog::{Flatpak, FlatpakSource, Prereq};
-use crate::engine::which;
+use crate::catalog::{Flatpak, FlatpakSource};
+use crate::which::which;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
@@ -99,17 +97,6 @@ impl Manager {
             Manager::Zypper => &["install", "-y"],
         }
     }
-
-    /// What this entry calls the package providing a prerequisite, or `None`
-    /// where nobody has checked. See `catalog::Prereq`.
-    fn package<'a>(&self, p: &'a Prereq) -> Option<&'a str> {
-        match self {
-            Manager::Dnf => p.dnf,
-            Manager::Apt => p.apt,
-            Manager::Pacman => p.pacman,
-            Manager::Zypper => p.zypper,
-        }
-    }
 }
 
 /// Which manager this host has, in the order the target distributions are
@@ -122,56 +109,6 @@ pub fn manager() -> Option<Manager> {
         }
     }
     None
-}
-
-/// What is missing before this service could start: flatpak itself, and any
-/// host program the unit's `ExecStart` names.
-///
-/// Returned as the package names to install, so the caller can put them in a
-/// sentence before installing anything. An empty vector means nothing is
-/// needed; `Err` means something is needed that this host has no known package
-/// for, and the entry's `provision` text is the answer instead.
-pub fn missing_packages(needs: &[Prereq]) -> Result<Vec<String>, String> {
-    let flatpak = Prereq {
-        bin: "flatpak",
-        dnf: Some("flatpak"),
-        apt: Some("flatpak"),
-        pacman: Some("flatpak"),
-        zypper: Some("flatpak"),
-    };
-    let wanted: Vec<&Prereq> = std::iter::once(&flatpak)
-        .chain(needs.iter())
-        .filter(|p| which(p.bin).is_none())
-        .collect();
-    if wanted.is_empty() {
-        return Ok(Vec::new());
-    }
-    let Some(m) = manager() else {
-        return Err(format!(
-            "this host is missing {} and has no package manager WebDesk knows",
-            names(&wanted)
-        ));
-    };
-    let mut out = Vec::new();
-    for p in &wanted {
-        match m.package(p) {
-            Some(pkg) => out.push(pkg.to_string()),
-            None => {
-                return Err(format!(
-                    "this host is missing {}, and WebDesk does not know which {} package \
-                     provides it",
-                    p.bin,
-                    m.bin()
-                ))
-            }
-        }
-    }
-    Ok(out)
-}
-
-fn names(ps: &[&Prereq]) -> String {
-    let v: Vec<&str> = ps.iter().map(|p| p.bin).collect();
-    v.join(" and ")
 }
 
 /// Install host packages, with everything the manager says going to the log the
@@ -189,13 +126,14 @@ pub fn install_packages(packages: &[String], log: &Path) -> Result<(), String> {
 /// `(version, download url)`.
 ///
 /// Walks the releases rather than taking `/releases/latest`, and that is not
-/// caution for its own sake: term.hut's newest release at the time of writing
-/// is a macOS-only build with no `.flatpak` asset at all, so `latest` would
-/// have this refuse to install on a host where twelve usable bundles are one
-/// page down.
+/// caution for its own sake. It was written against a repository whose newest
+/// release was a macOS-only build with no `.flatpak` asset at all, so `latest`
+/// would have refused to install on a host where a dozen usable bundles were one
+/// page down. A project that publishes for several platforms out of one release
+/// stream is the ordinary case, not the odd one.
 pub fn newest_bundle(repo: &str) -> Result<(String, String), String> {
     let Some(arch) = arch() else {
-        return Err(format!("no term.hut bundle is built for {}", std::env::consts::ARCH));
+        return Err(format!("no bundle is built for {}", std::env::consts::ARCH));
     };
     let suffix = format!("_{arch}.flatpak");
     let url = format!("https://api.github.com/repos/{repo}/releases?per_page=30");
@@ -285,8 +223,8 @@ pub fn provide(fp: &Flatpak, log: &Path) -> Result<(), String> {
 /// rather than hidden behind an `#[allow]` with no explanation. The mechanism is
 /// the part that was worth building with the rest of the Flatpak path, because
 /// it is the part that would have been guessed at later; the button, the route
-/// and the question of who may press it are a separate decision and belong with
-/// the update path for containers, which does not exist either.
+/// and the question of who may press it are a separate decision, and the
+/// README lists that decision under Not built yet.
 ///
 /// A remote has a repository behind it, so this is one command. A bundle has
 /// none -- `flatpak update` answers "Nothing to do" forever against an origin no
@@ -392,92 +330,6 @@ mod tests {
         assert!(!installed("com.example.definitely-not-installed"));
     }
 
-    /// Every prerequisite a shipping entry names must be installable on the
-    /// managers the README claims to target, or the entry has to say so by
-    /// leaving the name `None` -- which is a refusal with instructions, not a
-    /// wrong package. This catches a `Prereq` added with the field forgotten.
-    #[test]
-    fn a_prerequisite_is_either_named_or_deliberately_not() {
-        for app in crate::catalog::CATALOG {
-            let Some(host) = &app.host else { continue };
-            let Some(fp) = &host.flatpak else { continue };
-            for p in fp.needs {
-                assert!(!p.bin.is_empty(), "{} names a prerequisite with no binary", app.slug);
-                assert!(
-                    p.dnf.is_some() || p.apt.is_some() || p.pacman.is_some() || p.zypper.is_some(),
-                    "{}: {} is installable nowhere, so it can never be provided",
-                    app.slug,
-                    p.bin
-                );
-            }
-        }
-    }
-
-    /// The unit's `ExecStart` and the `Flatpak.id` beside it name the same
-    /// application, and they have to: `ExecStartPre` and `ExecStop` kill *by
-    /// id*, so an id that drifted from the command would leave the service
-    /// unable to stop the thing it just started -- which is the exact failure
-    /// the leading `flatpak kill` was added to prevent, wearing a new hat.
-    #[test]
-    fn the_unit_runs_the_flatpak_the_entry_names() {
-        for app in crate::catalog::CATALOG {
-            let Some(host) = &app.host else { continue };
-            let Some(fp) = &host.flatpak else { continue };
-            assert!(
-                host.unit_body.contains(&format!("flatpak run {}", fp.id)),
-                "{} would start something other than {}",
-                app.slug,
-                fp.id
-            );
-            assert!(
-                host.unit_body.contains(&format!("flatpak kill {}", fp.id)),
-                "{} could not stop {}",
-                app.slug,
-                fp.id
-            );
-            // Every host program the unit needs must be one the entry declares,
-            // or the install checks for something the unit never uses while the
-            // thing it does use goes unchecked.
-            for p in fp.needs {
-                assert!(
-                    host.unit_body.contains(p.bin),
-                    "{} declares {} but never runs it",
-                    app.slug,
-                    p.bin
-                );
-            }
-        }
-    }
-
-    /// The constraint that came with removing the container entry: an
-    /// application served from the host must not also be in the catalog as an
-    /// image. If it were, a host install that could not be provided would have
-    /// somewhere to quietly fall back to -- and "install this terminal" would
-    /// hand back a shell on the wrong machine.
-    ///
-    /// A streamed entry is held to the same rule, because the reasoning is not
-    /// about systemd -- it is about a fallback nobody asked for, and it applies
-    /// at least as hard here. The entire case for streaming GIMP is that it
-    /// edits your files in your home directory; a same-named container standing
-    /// in for it would edit a copy under `/var/lib/webdesk/appdata`, which is
-    /// not a degraded version of what was asked for but a different thing
-    /// wearing its name, in a directory nobody would think to look in.
-    #[test]
-    fn nothing_served_from_the_host_is_also_offered_as_a_container() {
-        for app in
-            crate::catalog::CATALOG.iter().filter(|a| a.host.is_some() || a.streamed.is_some())
-        {
-            let twin = crate::catalog::CATALOG
-                .iter()
-                .find(|o| o.slug != app.slug && o.name == app.name && !o.image.is_empty());
-            assert!(
-                twin.is_none(),
-                "{} is also in the catalog as a container, which is a fallback nobody asked for",
-                app.name
-            );
-        }
-    }
-
     /// A Flathub id is a name on somebody else's server, so nothing in this
     /// repository can confirm that it exists. What can be confirmed is its
     /// shape, and that is worth doing because of where the alternative fails: a
@@ -491,14 +343,8 @@ mod tests {
     #[test]
     fn every_flathub_id_looks_like_an_application_id() {
         for app in crate::catalog::CATALOG {
-            let named = [
-                app.host.as_ref().and_then(|h| h.flatpak.as_ref()),
-                app.streamed.as_ref().map(|s| &s.flatpak),
-            ];
-            for fp in named.into_iter().flatten() {
-                if !matches!(fp.source, FlatpakSource::Flathub) {
-                    continue;
-                }
+            let fp = &app.streamed.flatpak;
+            if matches!(fp.source, FlatpakSource::Flathub) {
                 assert!(
                     fp.id.matches('.').count() >= 2,
                     "{}: {} has too few components to be a reverse-DNS application id",
