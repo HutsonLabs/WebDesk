@@ -416,11 +416,26 @@ button colours its own icon on hover.
 
 There used to be a third set: brand marks from [Simple
 Icons](https://simpleicons.org), one per catalog entry, vendored by a
-`scripts/brand-icons.py` that is also gone. They went with the catalog. What a
-link draws instead is one of ten neutral marks from the hand-drawn set, chosen in
-the form — and the set is an allow-list in `src/links.rs` rather than "any id in
-the sprite", because an id the sprite has not got draws an empty square,
-silently, in somebody's dock.
+`scripts/brand-icons.py` that is also gone. They went with the catalog.
+
+A link draws one of ten neutral marks from the hand-drawn set — an allow-list in
+`src/links.rs` rather than "any id in the sprite", because an id the sprite has
+not got draws an empty square, silently, in somebody's dock — **or an icon you
+pasted**. Copy one from [iconify.design](https://iconify.design) (362,000 across
+238 sets, `selfh.st` among them) and paste its SVG into the form.
+
+Nothing is fetched and no set is vendored: selfh.st alone is 13.2 MB against a
+2.9 MB binary, and fetching at paint time would put a third-party request in
+front of every dock. **The geometry is stored with the link**, so a pasted icon
+works on an air-gapped host and is never fetched again.
+
+What is stored is *not* the markup that was pasted — SVG carries `<script>`,
+`onload=` and `javascript:` hrefs, and this desk's login form takes a system
+password. The browser reduces the paste to shapes and numbers in an inert parse,
+`src/links.rs` refuses anything that is not shapes and numbers, and the dock
+rebuilds it with `createElementNS` rather than markup. Icons are monochrome, so
+they take the colour of whatever they sit in. See
+[docs/links.md](docs/links.md#icons).
 
 ## How privileges work
 

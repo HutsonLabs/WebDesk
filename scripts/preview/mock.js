@@ -305,7 +305,15 @@ function updateCheck() {
    lets through and every other http:// address fails. */
 let LINKS = scene.links === 'none' ? [] : [
   {
+    // A pasted icon -- simple-icons:jellyfin, reduced to geometry the way the
+    // paste dialog reduces it. This is what a link looks like once somebody has
+    // been past the ten built-in marks, and it is the state worth having in the
+    // preview: nothing is fetched to draw it, here or on a real host.
     id: 'k3f9q2', name: 'Jellyfin', url: 'http://localhost:8096/', icon: 'a-box',
+    glyph: {
+      w: 24, h: 24,
+      shapes: [{ t: 'path', a: { fill: 'currentColor', d: 'M12 .002C8.826.002-1.398 18.537.16 21.666c1.56 3.129 22.14 3.094 23.682 0S15.177 0 12 0zm7.76 18.949c-1.008 2.028-14.493 2.05-15.514 0C3.224 16.9 9.92 4.755 12.003 4.755c2.081 0 8.77 12.166 7.759 14.196zM12 9.198c-1.054 0-4.446 6.15-3.93 7.189c.518 1.04 7.348 1.027 7.86 0c.511-1.027-2.874-7.19-3.93-7.19z' } }],
+    },
     open: 'frame', width: 1400, height: 900, added: NOW - 30 * 24 * HOUR,
     actor: 'hutson', scope: 'host', editable: USER.admin,
   },
@@ -416,6 +424,7 @@ const ROUTES = [
       name: body.name.trim(),
       url: body.url.trim(),
       icon: body.icon || 'a-globe',
+      glyph: body.glyph || null,
       open: body.open === 'tab' ? 'tab' : 'frame',
       width: body.width || 1200,
       height: body.height || 800,

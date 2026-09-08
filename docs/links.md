@@ -76,6 +76,7 @@ fetches it. That is not a compromise; it is why this feature is one file.
   "name": "Grafana",
   "url": "https://grafana.internal.example/",
   "icon": "a-globe",
+  "glyph": { "w": 24, "h": 24, "shapes": [ { "t": "path", "a": { "fill": "currentColor", "d": "M12 …" } } ] },
   "open": "frame",
   "width": 1400,
   "height": 900,
@@ -91,6 +92,9 @@ addresses an app, so it can never collide with a catalog slug, and adding a
 catalog entry later can never shadow somebody's tile. This is worth doing even
 though a typed slug would be prettier. The alternative is a validation rule, a
 collision refusal, and a failure mode where an upgrade quietly repoints an icon.
+
+`icon` is always set and is the fallback; `glyph` is a pasted icon and is absent
+when there is not one. See [Icons](#icons).
 
 `open` is `frame` or `tab`, and see [How it renders](#how-it-renders) for why it
 is a stored per-link choice rather than a global preference or a guess.
@@ -323,23 +327,95 @@ somebody has a site that needs it, not before.
 
 ## Icons
 
-A URL app picks a mark from `ui/ui-icons.svg`, the same sprite the catalog draws
-from, defaulting to a new `a-globe`. The picker shows the handful that make sense
-for a link — a globe, a chart, a terminal, a book, a gear.
+Ten built-in marks, and a paste box past them.
 
-**Fetching the site's favicon is deliberately not the default**, and the reason
-is not difficulty. It would mean every paint of the dock making a request from
-the desk's page to a third-party server, announcing to that server when somebody
-opened their desk and from where. For an internal Grafana that is nothing; for a
-tile pointing at a public site it is a beacon nobody asked for. It is also
-unreliable in exactly the case this feature is for: internal tools frequently
-have no favicon, and the fallback would be a broken image in a dock.
+The ten come from `ui/ui-icons.svg` and are an allow-list in `src/links.rs`
+rather than "any id in the sprite", because an id the sprite has not got draws an
+empty square, silently, in somebody's dock. They are enough to tell a router from
+a media server and no more.
 
-If it is wanted later, the shape is an opt-in checkbox on the entry, an
-`<img>` the browser loads directly, and the sprite mark underneath it as the
-fallback. Not a host-side fetch — see the rule above.
+**Past them: paste an icon's SVG from [iconify.design](https://iconify.design).**
+362,000 icons across 238 sets, including `selfh.st`, which has a mark for very
+nearly every application anybody self-hosts.
 
----
+### Why paste, and not a picker or a vendored set
+
+Both alternatives were measured before this was written.
+
+| | icons | raw | gzipped |
+| --- | --- | --- | --- |
+| Lucide | 1,816 | 595 KB | 89 KB |
+| Simple Icons | 3,459 | 4.8 MB | 1.9 MB |
+| selfh.st | 7,124 | **13.2 MB** | 2.6 MB |
+
+The binary is 2.9 MB. Vendoring the one set a homelab actually wants is more than
+four times the whole program — and it would still have been a fixed list, which
+is the thing being escaped.
+
+A picker means a search box, a results grid, a debounce and a request to
+`api.iconify.design` on every keystroke. That is a third-party dependency on the
+one screen where this desk is otherwise self-contained, and it is useless on a
+host with no route out. Fetching *at paint time* would be worse still: a
+third-party request in front of every dock, which is the same beacon this project
+already refused for favicons.
+
+**Pasting has neither cost.** You already have the icon on your clipboard by the
+time you reach the form. The geometry is stored in `links.json` beside the name
+and the URL, so from the moment it is saved the icon is as local as the rest of
+the desk — an air-gapped host draws it exactly as well as a connected one, and
+nothing is ever fetched again.
+
+Measured on five real icons: **307–4,014 bytes** each after reduction. The 4 KB
+one is a 512-grid app logo; the 24-grid line icons are 307–437.
+
+### What is stored is not what was pasted
+
+This is the security argument and it is the reason the feature is shaped this
+way.
+
+SVG is a document format. It carries `<script>`, `onload=`, `<foreignObject>`
+full of HTML, `href="javascript:"`. A stored string that ever reached
+`innerHTML` would be script execution in the desk's own origin — the origin whose
+login form takes a system password and hands back a root-capable shell. And the
+string would be reachable by anyone who could write `links.json`, not only by
+whoever pasted it.
+
+So there are three barriers and no string survives any of them:
+
+1. **The browser parses once, inertly, and throws the markup away.**
+   `DOMParser` with `image/svg+xml` builds a document that runs no scripts and
+   resolves no external references. What comes out is read attribute by
+   attribute against a table of seven tags and their geometry.
+2. **`src/links.rs` checks the structure again**, because a server that trusts
+   its client has no rule at all. A `d` must be the path alphabet and numbers; a
+   `transform` may name six functions and nothing else; `fill` and `stroke` may
+   be `currentColor` or `none`. That last one is what makes this monochrome, and
+   it disposes of `fill="url(#grad)"` without a rule of its own — gradients are
+   not among the kept elements, so a reference to one could only dangle.
+3. **The dock rebuilds by construction** — `createElementNS` and `setAttribute`,
+   never markup, never a second parse.
+
+There is no path from a stored byte to an executed one. The `d` attribute is
+where that claim rests: it is a command alphabet and a set of numbers, with no
+syntax for a URL, a script, an entity or an element. A string containing only
+those characters *cannot express* anything but a shape — which is a stronger
+statement than "nothing bad was found in it".
+
+Verified against 16 hostile inputs — `<script>` children, `onload`/`onclick`,
+`<foreignObject>`, external `<use>`, `javascript:` anchors, `<image href>`,
+`<style>` blocks and attributes, `<set attributeName="href">`, quote-breakout
+inside a `d`, `url()` in a fill and in a transform, and a missing viewBox. Every
+one is dropped or refused; the output is geometry in all cases.
+
+### Monochrome, deliberately
+
+An icon takes the colour of the control it sits in, like every other icon here.
+That keeps a pasted mark from shouting over the hand-drawn ones beside it in the
+dock — the same reason the old brand-mark script dropped brand colours — and it
+makes the paint allow-list two values long instead of a colour parser.
+
+A colour logo pastes fine; it arrives as a monochrome silhouette, and the form
+says so: it counts what was left out rather than quietly drawing less.
 
 ## Routes
 
@@ -373,8 +449,10 @@ Terminal and then these.
   button, and Open / Edit / Remove on each row. A row says the address, whether
   it opens framed or in a tab, and -- only when it is shared -- that everyone on
   this host sees it. `editable` decides whether Edit and Remove are drawn.
-- **The form** is one dialog for adding and editing. Under the address is a live
-  line that says the two things a person cannot see for themselves: what a
+- **The form** is one dialog for adding and editing, with the ten built-in marks
+  as a row and a dashed eleventh button that opens the paste box. Under the
+  address is a live line that says the two things a person cannot see for
+  themselves: what a
   scheme-less entry will be turned into, and that an `http://` page cannot be
   framed on an https desk. When the address is loopback it adds the warning
   below, which is the one that catches people out.

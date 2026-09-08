@@ -555,12 +555,15 @@ html{-webkit-tap-highlight-color:transparent;}
    and looked clickable throughout. */
 .fbtn:disabled{opacity:.55;cursor:default;}
 
-/* A chosen button in a row of alternatives -- the icon, where a link opens, who
-   sees it. Not a radio group: three of these are pictures, and a native radio
-   beside a picture is two controls saying one thing. The selected one carries
-   the accent the way the layout menu's current zone does, so "on" means the
-   same thing in both places. */
-.fbtn.on,.fbtn.on:active:not(:disabled){
+/* A chosen button in a row of alternatives -- where a link opens, who sees it.
+   Not a radio group: a native radio beside a two-word label is two controls
+   saying one thing.
+   
+   `:not(.fbtn--icon)` because the icon buttons already have an `on` of their
+   own further up, the one the Files toolbar's dotfile switch uses -- lit ink on
+   a tinted ground rather than a solid block. A picture on a solid accent loses
+   its own shape, which is the one thing an icon cannot afford. */
+.fbtn.on:not(.fbtn--icon),.fbtn.on:not(.fbtn--icon):active:not(:disabled){
   background:var(--accent);color:#0d1117;border-color:var(--accent);
 }
 /* The one button in a bar that starts something rather than reporting on it. */
@@ -570,6 +573,31 @@ html{-webkit-tap-highlight-color:transparent;}
    ten buttons wide and the dialog is not. */
 .pick{display:flex;flex-wrap:wrap;gap:6px;}
 .pick .fbtn--icon{padding:5px;}
+
+/* --- pasting an icon ---
+   The paste button sits at the end of the built-in row and is the way past it.
+   Dashed, so it reads as "add one" rather than as an eleventh mark; solid once
+   something has been pasted, because then it *is* the chosen icon and is drawing
+   it. */
+.paste-btn{border-style:dashed;}
+.paste-btn.on{border-style:solid;}
+.paste-svg{
+  width:100%;box-sizing:border-box;resize:vertical;min-height:74px;
+  background:var(--bg);color:var(--text);border:1px solid var(--line);
+  border-radius:6px;padding:7px 9px;font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;
+}
+.paste-svg:focus{outline:none;border-color:var(--accent);}
+/* The preview and the sentence about it, side by side: the icon is the answer
+   and the sentence is the caveat, and a caveat under an icon reads as a caption
+   for something else. */
+.paste-preview{display:flex;align-items:center;gap:12px;min-height:44px;}
+.paste-shown{
+  display:grid;place-items:center;width:44px;height:44px;flex:0 0 auto;
+  border:1px solid var(--line);border-radius:8px;background:var(--surface);
+  color:var(--text);
+}
+.paste-preview .modal-note{margin:0;flex:1;}
+.ic-p{width:26px;height:26px;display:block;}
 .files-list{flex:1;overflow:auto;}
 .frow{
   display:grid;grid-template-columns:1fr 90px 80px 150px;gap:10px;align-items:center;

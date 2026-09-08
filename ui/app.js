@@ -928,7 +928,7 @@ function createWindow({ title, width = 720, height = 460, app = '', icon = '', t
   if (titleIcon) {
     const mark = document.createElement('span');
     mark.className = 'win-mark';
-    mark.innerHTML = `<svg class="ic-a" aria-hidden="true"><use href="#${titleIcon}"></use></svg>`;
+    mark.appendChild(iconSvgFor(titleIcon, 'ic-a'));
     bar.appendChild(mark);
   }
   const titleEl = document.createElement('div');
@@ -1399,9 +1399,14 @@ function paintDock() {
       b.dataset.win = String(e.id);
       b.dataset.tip = name;
       b.setAttribute('aria-label', name);
-      b.innerHTML =
-        `<svg class="ic-d" aria-hidden="true"><use href="#${e.icon || 'i-file'}"></use></svg>` +
-        '<span class="dock-dot" aria-hidden="true"></span>';
+      // iconSvgFor rather than a template, because a window's icon may be a
+      // pasted glyph rather than a sprite id -- and interpolating one of those
+      // into a `#${...}` would draw `#[object Object]`.
+      b.appendChild(iconSvgFor(e.icon || 'i-file', 'ic-d'));
+      const dot = document.createElement('span');
+      dot.className = 'dock-dot';
+      dot.setAttribute('aria-hidden', 'true');
+      b.appendChild(dot);
       onTap(b, () => raiseWindow(e));
       onContext(b, (ev) => {
         openPop({
@@ -1540,6 +1545,222 @@ function iconIdFor(it) {
 function iconSvg(it) {
   return `<svg class="ic" aria-hidden="true"><use href="#${iconIdFor(it)}"></use></svg>`;
 }
+
+/* --------------------------------------------------------------- glyphs ---*/
+
+/* A pasted icon, reduced to geometry and rebuilt by construction.
+
+   The desk ships ten marks, which is enough to tell a router from a media
+   server and no more. This is the way past them: copy an icon's SVG from
+   iconify.design -- 362,000 across 238 sets, including selfh.st, which has a
+   mark for very nearly every application anybody self-hosts -- and paste it in.
+
+   Nothing is fetched, here or on the host, and no icon set is vendored. Both
+   were measured before this was written: selfh.st alone is 13.2 MB of JSON
+   against a 2.9 MB binary, and fetching at paint time would put a third-party
+   request in front of every dock. Pasting has neither cost, and the icon is
+   local from the moment it is saved -- an air-gapped desk draws it as well as a
+   connected one.
+
+   **The paste is never stored and never re-parsed.** SVG is a document format:
+   it carries <script>, onload=, <foreignObject> full of HTML, href="javascript:".
+   A stored string that ever reached innerHTML would be script execution in this
+   page -- the page whose login form takes a system password. So the paste is
+   parsed once, inertly, reduced to shapes and numbers, and thrown away; what
+   travels to the host is that structure, which src/links.rs checks again; and
+   what draws it is createElementNS and setAttribute, never markup. There is no
+   path from a stored byte to an executed one. */
+
+const GLYPH_SHAPES = {
+  path: ['d', 'fill-rule', 'clip-rule'],
+  circle: ['cx', 'cy', 'r'],
+  ellipse: ['cx', 'cy', 'rx', 'ry'],
+  rect: ['x', 'y', 'width', 'height', 'rx', 'ry'],
+  line: ['x1', 'y1', 'x2', 'y2'],
+  polyline: ['points'],
+  polygon: ['points'],
+};
+
+/* Paint carried down from a <g> or from the root <svg> onto each shape.
+
+   Flattened rather than nested, so what is stored is a list and not a tree.
+   Every set that groups its paths puts the paint on the group -- lucide sets
+   fill="none" stroke="currentColor" once on the <svg> and never again -- so an
+   extractor that only read the shapes would produce a solid blob where a
+   drawing should be. */
+const GLYPH_PAINT = [
+  'fill', 'stroke', 'stroke-width', 'stroke-linecap', 'stroke-linejoin',
+  'stroke-miterlimit', 'stroke-dasharray', 'stroke-dashoffset',
+  'fill-opacity', 'stroke-opacity', 'opacity',
+];
+
+const SVG_NS = 'http://www.w3.org/2000/svg';
+
+/* Paint, forced monochrome.
+
+   `none` survives, because it is load-bearing: a stroked icon says fill="none"
+   and would otherwise fill in. Everything else becomes currentColor, which is
+   how every other icon in this desk takes the colour of the control it sits in
+   -- and it disposes of fill="url(#grad)" without a rule of its own, since
+   gradients are not among the elements kept and the reference would dangle. */
+function paintValue(key, raw) {
+  const v = (raw || '').trim();
+  if (!v) return null;
+  if (key === 'fill' || key === 'stroke') {
+    return v.toLowerCase() === 'none' ? 'none' : 'currentColor';
+  }
+  if (key === 'stroke-linecap') {
+    return ['butt', 'round', 'square'].includes(v) ? v : null;
+  }
+  if (key === 'stroke-linejoin') {
+    return ['miter', 'round', 'bevel', 'arcs', 'miter-clip'].includes(v) ? v : null;
+  }
+  if (key === 'stroke-dasharray') {
+    return /^[0-9eE.,+\-\s]+$/.test(v) ? v : null;
+  }
+  return Number.isFinite(parseFloat(v)) ? String(parseFloat(v)) : null;
+}
+
+function geometryValue(key, raw) {
+  const v = (raw || '').trim();
+  if (!v) return null;
+  if (key === 'd') return /^[MmLlHhVvCcSsQqTtAaZz0-9eE.,+\-\s]+$/.test(v) ? v : null;
+  if (key === 'points') return /^[0-9eE.,+\-\s]+$/.test(v) ? v : null;
+  if (key === 'fill-rule' || key === 'clip-rule') {
+    return ['nonzero', 'evenodd'].includes(v) ? v : null;
+  }
+  return Number.isFinite(parseFloat(v)) ? String(parseFloat(v)) : null;
+}
+
+/* A transform list, as the six named functions and numbers.
+
+   Kept because some sets draw a rotated variant by transforming the base shape
+   rather than by emitting different geometry, and dropping it silently pastes an
+   icon that comes out the wrong way round. url(...) cannot survive: the only
+   words allowed are the function names. */
+function transformValue(raw) {
+  const v = (raw || '').trim();
+  if (!v || v.length > 512) return null;
+  const ok = /^(\s*(matrix|translate|scale|rotate|skewX|skewY)\(\s*[0-9eE.,+\-\s]*\)\s*)+$/;
+  return ok.test(v) ? v : null;
+}
+
+/* Turn pasted markup into a glyph, or explain why it is not one.
+
+   DOMParser with image/svg+xml builds an inert document: scripts do not run,
+   external references are not resolved, and nothing is loaded. That is what
+   makes it safe to parse a stranger's SVG at all -- and it is still only a
+   parse. Everything that comes out of it is read attribute by attribute
+   through the tables above; the document itself is never attached to this one. */
+function glyphFromSvg(text) {
+  const src = (text || '').trim();
+  if (!src) return { error: 'Paste an icon first.' };
+  if (src.length > 200000) return { error: 'That is far larger than an icon.' };
+  if (!/^<(\?xml|svg)/i.test(src)) {
+    return { error: 'That does not look like an SVG. On iconify.design, use the SVG copy button.' };
+  }
+
+  let doc;
+  try {
+    doc = new DOMParser().parseFromString(src, 'image/svg+xml');
+  } catch (_) {
+    return { error: 'That SVG could not be read.' };
+  }
+  if (doc.querySelector('parsererror')) return { error: 'That SVG could not be read.' };
+  const root = doc.documentElement;
+  if (!root || root.localName !== 'svg') return { error: 'That is not an SVG element.' };
+
+  // The grid the geometry is drawn on. viewBox first; width/height is the
+  // fallback for the sets that omit it.
+  let w = 0;
+  let h = 0;
+  const vb = (root.getAttribute('viewBox') || '').trim().split(/[\s,]+/).map(Number);
+  if (vb.length === 4 && vb.every(Number.isFinite)) {
+    [, , w, h] = vb;
+  } else {
+    w = parseFloat(root.getAttribute('width'));
+    h = parseFloat(root.getAttribute('height'));
+  }
+  if (!(w > 0 && h > 0)) return { error: 'That icon has no viewBox to draw it on.' };
+
+  const shapes = [];
+  let dropped = 0;
+
+  const walk = (el, inherited) => {
+    if (shapes.length > 96) return;
+    // Paint on this element, carried down to its children.
+    const paint = { ...inherited };
+    for (const key of GLYPH_PAINT) {
+      const v = paintValue(key, el.getAttribute(key));
+      if (v !== null) paint[key] = v;
+    }
+    const t = transformValue(el.getAttribute('transform'));
+
+    for (const child of el.children) {
+      const tag = child.localName;
+      if (tag === 'g' || tag === 'svg') { walk(child, paint); continue; }
+      // <defs>, <title>, <desc>, <style>, <script>, <linearGradient>, <use>,
+      // <foreignObject>: not shapes, and not kept. Counted so the form can say
+      // that something was left out rather than quietly drawing less.
+      if (!GLYPH_SHAPES[tag]) { dropped += 1; continue; }
+
+      const a = {};
+      for (const key of GLYPH_SHAPES[tag]) {
+        const v = geometryValue(key, child.getAttribute(key));
+        if (v !== null) a[key] = v;
+      }
+      // Geometry is what makes it a shape; a <path> with no `d` draws nothing.
+      const own = GLYPH_SHAPES[tag].some((k) => k in a && k !== 'fill-rule' && k !== 'clip-rule');
+      if (!own) { dropped += 1; continue; }
+
+      for (const [k, v] of Object.entries(paint)) a[k] = v;
+      for (const key of GLYPH_PAINT) {
+        const v = paintValue(key, child.getAttribute(key));
+        if (v !== null) a[key] = v;
+      }
+      const ct = transformValue(child.getAttribute('transform')) || t;
+      if (ct) a.transform = ct;
+
+      shapes.push({ t: tag, a });
+    }
+  };
+  walk(root, {});
+
+  if (!shapes.length) {
+    return { error: 'Nothing in that SVG could be drawn as an icon.' };
+  }
+  return { glyph: { w, h, shapes }, dropped };
+}
+
+/* Build the icon. Elements and attributes, never markup.
+
+   `spec` is a sprite id or a glyph object, which is the whole of what the dock,
+   the rows and the title bars need to know about the difference. */
+function iconSvgFor(spec, cls) {
+  const svg = document.createElementNS(SVG_NS, 'svg');
+  svg.setAttribute('class', cls);
+  svg.setAttribute('aria-hidden', 'true');
+
+  if (spec && typeof spec === 'object' && Array.isArray(spec.shapes)) {
+    svg.setAttribute('viewBox', `0 0 ${spec.w} ${spec.h}`);
+    for (const s of spec.shapes) {
+      if (!GLYPH_SHAPES[s.t]) continue;
+      const el = document.createElementNS(SVG_NS, s.t);
+      for (const [k, v] of Object.entries(s.a || {})) el.setAttribute(k, v);
+      svg.appendChild(el);
+    }
+    return svg;
+  }
+
+  const use = document.createElementNS(SVG_NS, 'use');
+  use.setAttribute('href', '#' + (spec || 'a-globe'));
+  svg.appendChild(use);
+  return svg;
+}
+
+/* What a link draws with: its pasted icon if it has one, its sprite mark
+   otherwise. One place, so the dock, the window and the row cannot disagree. */
+const linkIcon = (link) => (link && link.glyph) || (link && link.icon) || 'a-globe';
 
 /* ---------------------------------------------------------------- files ---*/
 
@@ -2502,9 +2723,11 @@ function paintLinks() {
     b.dataset.app = linkKey(link.id);
     b.dataset.tip = `${link.name} — ${urlHost(link.url)}`;
     b.setAttribute('aria-label', link.name);
-    b.innerHTML =
-      `<svg class="ic-d" aria-hidden="true"><use href="#${link.icon || 'a-globe'}"></use></svg>` +
-      '<span class="dock-dot" aria-hidden="true"></span>';
+    b.appendChild(iconSvgFor(linkIcon(link), 'ic-d'));
+    const dot = document.createElement('span');
+    dot.className = 'dock-dot';
+    dot.setAttribute('aria-hidden', 'true');
+    b.appendChild(dot);
     onTap(b, (e) => openLink(link, e.altKey || e.metaKey));
     host.appendChild(b);
   }
@@ -2529,8 +2752,8 @@ function frameWindow(link) {
   return createWindow({
     title: link.name,
     app: linkKey(link.id),
-    icon: link.icon || 'a-globe',
-    titleIcon: link.icon || 'a-globe',
+    icon: linkIcon(link),
+    titleIcon: linkIcon(link),
     width: link.width || 1200,
     height: (link.height || 800) + 35,
     build(entry) {
@@ -2681,6 +2904,147 @@ function makeVeil(host) {
    Built by hand rather than through openModal's `fields`, because two of these
    controls are not text inputs -- the icon is a row of buttons and the address
    needs a live line under it saying what it will be turned into. */
+/* Paste an icon.
+
+   Deliberately not a search, and not a picker. A picker means a query box, a
+   results grid, a debounce and a request to api.iconify.design every time
+   somebody types -- which is a third-party dependency on the one screen where
+   this desk is otherwise entirely self-contained, and useless on a host with no
+   route to the internet. Pasting has none of that: you already have the icon on
+   your clipboard by the time you get here, and the desk never talks to anyone.
+
+   What comes back is a glyph or null. Null means cancelled, not cleared -- the
+   caller keeps whatever it had. */
+function pasteIconDialog(current) {
+  return new Promise((resolve) => {
+    const back = document.createElement('div');
+    back.className = 'modal';
+    const card = document.createElement('form');
+    card.className = 'modal-card';
+    card.setAttribute('role', 'dialog');
+    card.setAttribute('aria-modal', 'true');
+    back.appendChild(card);
+
+    const h = document.createElement('h2');
+    h.textContent = 'Paste an icon';
+    card.appendChild(h);
+
+    const p = document.createElement('p');
+    p.className = 'modal-text';
+    p.textContent =
+      'Find one on iconify.design, press its SVG copy button, and paste it here. ' +
+      'Nothing is downloaded — the shape is stored with the link, so it keeps ' +
+      'working on a host with no internet.';
+    card.appendChild(p);
+
+    const wrap = document.createElement('label');
+    wrap.className = 'modal-field';
+    const cap = document.createElement('span');
+    cap.textContent = 'SVG';
+    const box = document.createElement('textarea');
+    box.className = 'paste-svg';
+    box.rows = 5;
+    box.spellcheck = false;
+    box.setAttribute('autocomplete', 'off');
+    box.placeholder = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">…';
+    wrap.append(cap, box);
+    card.appendChild(wrap);
+
+    /* The preview is the whole feedback loop. What it shows is not the pasted
+       markup -- it is the reduced glyph, rebuilt the same way the dock will
+       rebuild it, so what is on screen here is exactly what gets stored. An icon
+       that loses something in the reduction loses it visibly, now, rather than
+       in somebody's dock later. */
+    const row = document.createElement('div');
+    row.className = 'paste-preview';
+    const shown = document.createElement('div');
+    shown.className = 'paste-shown';
+    const say = document.createElement('p');
+    say.className = 'modal-note';
+    row.append(shown, say);
+    card.appendChild(row);
+
+    const err = document.createElement('p');
+    err.className = 'login-err';
+    err.setAttribute('role', 'alert');
+    card.appendChild(err);
+
+    const actions = document.createElement('div');
+    actions.className = 'modal-actions';
+    const cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.className = 'modal-btn';
+    cancel.textContent = 'Cancel';
+    const go = document.createElement('button');
+    go.type = 'submit';
+    go.className = 'modal-btn modal-btn--go';
+    go.textContent = 'Use this icon';
+    go.disabled = true;
+    actions.append(cancel, go);
+    card.appendChild(actions);
+
+    let glyph = current || null;
+
+    const preview = (g, note) => {
+      shown.textContent = '';
+      err.textContent = '';
+      say.textContent = note || '';
+      say.hidden = !note;
+      if (g) shown.appendChild(iconSvgFor(g, 'ic-p'));
+      go.disabled = !g;
+      glyph = g;
+    };
+
+    const reread = () => {
+      const raw = box.value.trim();
+      if (!raw) { preview(null, ''); return; }
+      const out = glyphFromSvg(raw);
+      if (out.error) {
+        shown.textContent = '';
+        say.hidden = true;
+        err.textContent = out.error;
+        go.disabled = true;
+        glyph = null;
+        return;
+      }
+      const n = out.glyph.shapes.length;
+      preview(
+        out.glyph,
+        `${n} shape${n === 1 ? '' : 's'} on a ${out.glyph.w}×${out.glyph.h} grid` +
+        (out.dropped ? `, and ${out.dropped} part${out.dropped === 1 ? '' : 's'} left out — ` +
+                       'icons here are a single colour, so gradients and images do not come across.'
+                     : '. It takes the colour of whatever it sits in.'),
+      );
+    };
+    box.addEventListener('input', reread);
+    box.addEventListener('paste', () => setTimeout(reread, 0));
+
+    if (current) preview(current, 'The icon this link uses now. Paste over it to change it.');
+
+    let settled = false;
+    const finish = (v) => {
+      if (settled) return;
+      settled = true;
+      document.removeEventListener('keydown', onKey, true);
+      back.remove();
+      resolve(v);
+    };
+    function onKey(e) {
+      if (e.key !== 'Escape') return;
+      e.preventDefault();
+      e.stopPropagation();
+      finish(null);
+    }
+    document.addEventListener('keydown', onKey, true);
+    onTap(cancel, () => finish(null));
+    back.addEventListener('pointerdown', (e) => { if (e.target === back) finish(null); });
+    card.addEventListener('submit', (e) => { e.preventDefault(); if (glyph) finish(glyph); });
+
+    document.body.appendChild(back);
+    box.focus();
+  });
+}
+
 function linkForm(existing) {
   const editing = !!existing;
   return new Promise((resolve) => {
@@ -2746,18 +3110,47 @@ function linkForm(existing) {
     const iconRow = document.createElement('div');
     iconRow.className = 'pick';
     let icon = (existing && existing.icon) || 'a-globe';
+    /* A pasted icon, if this link has one. It sits *over* the built-in mark
+       rather than replacing it: `icon` is still sent and still stored, so a link
+       always has something to draw even for a build that has never heard of
+       glyphs, and clearing the paste has somewhere to fall back to. */
+    let glyph = (existing && existing.glyph) || null;
+
+    const builtins = [];
+    const markChoice = () => {
+      for (const b of builtins) b.classList.toggle('on', !glyph && b.dataset.icon === icon);
+      pasteBtn.classList.toggle('on', !!glyph);
+      pasteBtn.textContent = '';
+      pasteBtn.appendChild(iconSvgFor(glyph || 'a-external', 'ic-a'));
+      pasteBtn.dataset.tip = glyph ? 'Pasted icon — click to change' : 'Paste one from iconify.design';
+    };
+
     for (const id of linkIcons) {
       const b = document.createElement('button');
       b.type = 'button';
-      b.className = 'fbtn fbtn--icon' + (id === icon ? ' on' : '');
+      b.className = 'fbtn fbtn--icon';
+      b.dataset.icon = id;
       b.setAttribute('aria-label', id.replace(/^a-/, ''));
-      b.innerHTML = `<svg class="ic-a" aria-hidden="true"><use href="#${id}"></use></svg>`;
-      onTap(b, () => {
-        icon = id;
-        for (const other of iconRow.children) other.classList.toggle('on', other === b);
-      });
+      b.appendChild(iconSvgFor(id, 'ic-a'));
+      onTap(b, () => { icon = id; glyph = null; markChoice(); });
+      builtins.push(b);
       iconRow.appendChild(b);
     }
+
+    /* The way past the ten. Last in the row rather than a separate control,
+       because it is the same question -- which icon -- and the answer sits in
+       the same place whichever way it was arrived at. */
+    const pasteBtn = document.createElement('button');
+    pasteBtn.type = 'button';
+    pasteBtn.className = 'fbtn fbtn--icon tip paste-btn';
+    pasteBtn.setAttribute('aria-label', 'Paste an icon');
+    onTap(pasteBtn, async () => {
+      const g = await pasteIconDialog(glyph);
+      if (g) { glyph = g; markChoice(); }
+    });
+    iconRow.appendChild(pasteBtn);
+    markChoice();
+
     iconLabel.append(iconCap, iconRow);
     card.appendChild(iconLabel);
 
@@ -2876,6 +3269,11 @@ function linkForm(existing) {
     };
     function onKey(e) {
       if (e.key !== 'Escape') return;
+      // The paste dialog opens on top of this one, and both listen on document
+      // in the capture phase -- this one first, because it registered first.
+      // Without this the outer form would close and take the dialog with it.
+      const stack = [...document.querySelectorAll('.modal')];
+      if (stack[stack.length - 1] !== back) return;
       e.preventDefault();
       e.stopPropagation();
       finish(null);
@@ -2889,7 +3287,7 @@ function linkForm(existing) {
       const full = normalizeUrl(url.value);
       if (!name.value.trim()) { err.textContent = 'It needs a name.'; name.focus(); return; }
       if (!full) { err.textContent = 'It needs an address.'; url.focus(); return; }
-      finish({ name: name.value.trim(), url: full, icon, open, scope });
+      finish({ name: name.value.trim(), url: full, icon, glyph, open, scope });
     });
 
     document.body.appendChild(back);
@@ -2929,7 +3327,7 @@ function openLinks() {
 
         const icon = document.createElement('span');
         icon.className = 'apps-icon';
-        icon.innerHTML = `<svg class="ic-a" aria-hidden="true"><use href="#${link.icon || 'a-globe'}"></use></svg>`;
+        icon.appendChild(iconSvgFor(linkIcon(link), 'ic-a'));
 
         const text = document.createElement('div');
         text.className = 'apps-text';

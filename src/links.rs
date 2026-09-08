@@ -65,6 +65,7 @@ use axum::Json;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 /// Longest URL accepted. Nothing legitimate is longer, and it keeps a
@@ -85,6 +86,234 @@ const ICONS: &[&str] = &[
 ];
 
 pub const DEFAULT_ICON: &str = "a-globe";
+
+// ------------------------------------------------------------------- glyphs
+
+/// A pasted icon, reduced to geometry.
+///
+/// The ten built-in marks above are enough to tell a router from a media server
+/// and no more. This is the way past them: copy an icon's SVG from
+/// [iconify.design](https://iconify.design) -- 362,000 of them across 238 sets,
+/// including `selfh.st`, which is a mark for very nearly every application
+/// anybody self-hosts -- and paste it into the form.
+///
+/// **Nothing is fetched, by this program or by the browser.** No icon set is
+/// vendored either. Both alternatives were measured before this was written: the
+/// selfh.st set alone is 13.2 MB of JSON, against a 2.9 MB binary, and would
+/// still have been a fixed list. Fetching from `api.iconify.design` at paint
+/// time would have put a third-party request in front of every dock, which is
+/// the same beacon this project already refused for favicons. Pasting has
+/// neither cost. The geometry lands in `links.json` beside the name and the URL,
+/// and from then on the icon is as local as the rest of the desk -- an
+/// air-gapped host draws it exactly as well as a connected one.
+///
+/// **What is stored is not the markup that was pasted.** That distinction is the
+/// whole security argument here and it is worth stating twice. SVG is a document
+/// format: it carries `<script>`, `onload=`, `<foreignObject>` full of HTML, and
+/// `href="javascript:"`. A stored string that ever reaches `innerHTML` is script
+/// execution in the desk's own origin -- the origin whose login form takes a
+/// system password and hands back a root-capable shell. So the browser reduces
+/// the paste to shapes and numbers before it is ever sent here, this file
+/// refuses anything that is not shapes and numbers, and the browser rebuilds the
+/// icon with `createElementNS` and `setAttribute` rather than by parsing a string
+/// a second time. There is no path from a stored byte to an executed one.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct Glyph {
+    /// The `viewBox` the shapes are drawn on. Every set uses its own grid --
+    /// 24 for most, 512 for the app logos -- and the shapes mean nothing without
+    /// it.
+    pub w: f32,
+    pub h: f32,
+    pub shapes: Vec<Shape>,
+}
+
+/// One drawing primitive: a tag name and the attributes it is allowed to carry.
+///
+/// A map rather than a variant per tag, because the validation is a table either
+/// way and a table is easier to read than seven structs. The names are short
+/// because this is written into a JSON file once per link and read on every
+/// dock paint.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct Shape {
+    /// The element to create. One of `SHAPES`.
+    pub t: String,
+    /// Attributes, already reduced to what `attr_ok` permits.
+    pub a: BTreeMap<String, String>,
+}
+
+/// Caps. A pasted icon is a few hundred bytes; these are three orders of
+/// magnitude above anything real, and they exist so that a paste cannot make
+/// `links.json` expensive to parse on every dock paint.
+const MAX_SHAPES: usize = 96;
+const MAX_GLYPH_BYTES: usize = 16 * 1024;
+
+/// The elements that may be drawn, and the geometry each may carry.
+///
+/// Everything not on this list is dropped rather than refused, because a set
+/// that wraps its paths in a `<g>` or ships a `<title>` is not doing anything
+/// wrong -- the browser flattens those before sending. What reaches here should
+/// already be only this, and the check is what makes that true rather than
+/// hoped for.
+const SHAPES: &[(&str, &[&str])] = &[
+    ("path", &["d", "fill-rule", "clip-rule"]),
+    ("circle", &["cx", "cy", "r"]),
+    ("ellipse", &["cx", "cy", "rx", "ry"]),
+    ("rect", &["x", "y", "width", "height", "rx", "ry"]),
+    ("line", &["x1", "y1", "x2", "y2"]),
+    ("polyline", &["points"]),
+    ("polygon", &["points"]),
+];
+
+/// Paint attributes any shape may carry.
+///
+/// `fill` and `stroke` are here and are the reason this is monochrome: they are
+/// forced to `currentColor` or `none` and can be nothing else. That is not only
+/// a matter of taste -- an icon takes the colour of the control it sits in, the
+/// way every other icon in this desk does -- it also disposes of `fill="url(#g)"`
+/// without a special case, since gradients are not among the elements that may
+/// be drawn and a reference to one would dangle.
+const PAINT: &[&str] = &[
+    "fill", "stroke", "stroke-width", "stroke-linecap", "stroke-linejoin",
+    "stroke-miterlimit", "stroke-dasharray", "stroke-dashoffset",
+    "fill-opacity", "stroke-opacity", "opacity", "transform",
+];
+
+fn is_num(v: &str) -> bool {
+    !v.is_empty()
+        && v.len() <= 24
+        && v.parse::<f32>().map(|n| n.is_finite()).unwrap_or(false)
+}
+
+/// The characters a path `d` is made of, and nothing else.
+///
+/// This is the attribute the whole feature rests on, and the reason it can rest
+/// on it: a `d` is a command alphabet and a set of numbers. It has no syntax for
+/// a URL, a script, an entity or an element, so a string that contains only
+/// these characters cannot express anything but a shape. That is a stronger
+/// statement than "we did not find anything bad in it".
+fn is_geometry(v: &str) -> bool {
+    !v.is_empty()
+        && v.chars().all(|c| {
+            c.is_ascii_digit()
+                || matches!(c, 'M' | 'm' | 'L' | 'l' | 'H' | 'h' | 'V' | 'v'
+                    | 'C' | 'c' | 'S' | 's' | 'Q' | 'q' | 'T' | 't'
+                    | 'A' | 'a' | 'Z' | 'z' | 'e' | 'E'
+                    | '.' | ',' | '+' | '-' | ' ' | '\t' | '\n' | '\r')
+        })
+}
+
+/// A list of numbers: `points`, `stroke-dasharray`.
+fn is_numlist(v: &str) -> bool {
+    !v.is_empty()
+        && v.chars().all(|c| {
+            c.is_ascii_digit() || matches!(c, '.' | ',' | '+' | '-' | 'e' | 'E' | ' ' | '\t' | '\n' | '\r')
+        })
+}
+
+/// A transform list, as the named functions and numbers and nothing else.
+///
+/// Kept because some sets draw a rotated variant by transforming the base shape
+/// rather than by emitting different geometry, and dropping it silently would
+/// paste an icon that came out the wrong way round. `url(...)` cannot survive
+/// this: the only words permitted are the six function names.
+fn is_transform(v: &str) -> bool {
+    if v.is_empty() || v.len() > 512 {
+        return false;
+    }
+    let mut word = String::new();
+    for c in v.chars() {
+        if c.is_ascii_alphabetic() {
+            word.push(c);
+            continue;
+        }
+        if c == '(' {
+            if !matches!(
+                word.as_str(),
+                "matrix" | "translate" | "scale" | "rotate" | "skewX" | "skewY"
+            ) {
+                return false;
+            }
+            word.clear();
+            continue;
+        }
+        if !word.is_empty() {
+            return false;
+        }
+        if !(c.is_ascii_digit()
+            || matches!(c, '.' | ',' | '+' | '-' | 'e' | 'E' | ')' | ' ' | '\t' | '\n' | '\r'))
+        {
+            return false;
+        }
+    }
+    word.is_empty()
+}
+
+/// Whether this attribute may appear on this tag, and whether its value is what
+/// that attribute is made of.
+fn attr_ok(tag: &str, key: &str, value: &str) -> bool {
+    if value.len() > 4096 {
+        return false;
+    }
+    let geometry = SHAPES.iter().find(|(t, _)| *t == tag).map(|(_, a)| *a).unwrap_or(&[]);
+    let permitted = geometry.contains(&key) || PAINT.contains(&key);
+    if !permitted {
+        return false;
+    }
+    match key {
+        "d" => is_geometry(value),
+        "points" | "stroke-dasharray" => is_numlist(value),
+        "transform" => is_transform(value),
+        // Forced rather than checked -- see `PAINT`.
+        "fill" | "stroke" => value == "currentColor" || value == "none",
+        "fill-rule" | "clip-rule" => value == "nonzero" || value == "evenodd",
+        "stroke-linecap" => matches!(value, "butt" | "round" | "square"),
+        "stroke-linejoin" => matches!(value, "miter" | "round" | "bevel" | "arcs" | "miter-clip"),
+        _ => is_num(value),
+    }
+}
+
+/// Reduce a submitted glyph to what may be stored, or say why it cannot be.
+///
+/// Refusing rather than sanitising, for one attribute and one tag at a time.
+/// Quietly dropping an attribute would draw an icon that is not the one somebody
+/// pasted and give them no way to find out why; the browser has already done the
+/// reduction, so anything arriving here that this rejects is a client that
+/// disagrees with the server about the format, and that is worth a message.
+fn validate_glyph(g: &Glyph) -> Result<Glyph, String> {
+    if !(g.w.is_finite() && g.h.is_finite()) || g.w <= 0.0 || g.h <= 0.0 || g.w > 8192.0 || g.h > 8192.0 {
+        return Err("that icon has no usable viewBox".into());
+    }
+    if g.shapes.is_empty() {
+        return Err("there is nothing to draw in that icon".into());
+    }
+    if g.shapes.len() > MAX_SHAPES {
+        return Err(format!("that icon has more than {MAX_SHAPES} shapes in it"));
+    }
+
+    let mut out = Vec::with_capacity(g.shapes.len());
+    let mut bytes = 0usize;
+    for s in &g.shapes {
+        let Some((tag, _)) = SHAPES.iter().find(|(t, _)| *t == s.t) else {
+            return Err(format!("{} is not a shape this build draws", s.t));
+        };
+        let mut a = BTreeMap::new();
+        for (k, v) in &s.a {
+            if !attr_ok(tag, k, v) {
+                return Err(format!("{k} is not something a {tag} may carry here"));
+            }
+            bytes += k.len() + v.len();
+            a.insert(k.clone(), v.clone());
+        }
+        if a.is_empty() {
+            return Err(format!("that {tag} has no geometry in it"));
+        }
+        out.push(Shape { t: (*tag).to_string(), a });
+    }
+    if bytes > MAX_GLYPH_BYTES {
+        return Err("that icon is larger than this build stores".into());
+    }
+    Ok(Glyph { w: g.w, h: g.h, shapes: out })
+}
 
 /// How a link opens: framed in a WebDesk window, or in a browser tab.
 ///
@@ -111,7 +340,14 @@ pub struct Link {
     pub id: String,
     pub name: String,
     pub url: String,
+    /// The built-in mark, and the fallback when there is no glyph. Always set,
+    /// so a link drawn by an older build -- or one whose glyph failed to
+    /// validate on the way in -- still has something to show.
     pub icon: String,
+    /// A pasted icon, if there is one. `None` is the ordinary case and means the
+    /// sprite mark above is what gets drawn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub glyph: Option<Glyph>,
     pub open: String,
     pub width: u16,
     pub height: u16,
@@ -236,6 +472,11 @@ pub struct LinkBody {
     url: String,
     #[serde(default)]
     icon: String,
+    /// A pasted icon, already reduced to shapes by the browser. `None` clears
+    /// whatever was there and falls back to `icon`, which is how the form's
+    /// "use a built-in mark instead" works without a second route.
+    #[serde(default)]
+    glyph: Option<Glyph>,
     #[serde(default)]
     open: String,
     #[serde(default)]
@@ -348,6 +589,15 @@ fn validate(body: &LinkBody, own_host: Option<&str>) -> Result<Link, String> {
         return Err("that is not one of the icons this build has".into());
     };
 
+    // The pasted icon, if there is one. `icon` above is still required and still
+    // checked: it is what gets drawn if this link is ever read by a build that
+    // does not know about glyphs, and what the form falls back to when somebody
+    // clears the paste.
+    let glyph = match &body.glyph {
+        Some(g) => Some(validate_glyph(g)?),
+        None => None,
+    };
+
     let open = open_mode(if body.open.is_empty() { "frame" } else { &body.open })
         .ok_or("a link opens either framed or in a tab")?;
 
@@ -363,6 +613,7 @@ fn validate(body: &LinkBody, own_host: Option<&str>) -> Result<Link, String> {
         name: name.to_string(),
         url: url.to_string(),
         icon: (*icon).to_string(),
+        glyph,
         open: open.to_string(),
         width,
         height,
@@ -392,6 +643,7 @@ fn as_json(l: &Link, scope: &str, editable: bool) -> Value {
         "name": l.name,
         "url": l.url,
         "icon": l.icon,
+        "glyph": l.glyph,
         "open": l.open,
         "width": l.width,
         "height": l.height,
@@ -583,6 +835,7 @@ mod tests {
             name: "Jellyfin".into(),
             url: url.into(),
             icon: String::new(),
+            glyph: None,
             open: String::new(),
             width: 0,
             height: 0,
@@ -726,6 +979,198 @@ mod tests {
             user_file(&ident("/home/alice/")),
             "/home/alice/.config/webdesk/links.json"
         );
+    }
+
+    // ------------------------------------------------------------- glyphs
+
+    fn shape(t: &str, pairs: &[(&str, &str)]) -> Shape {
+        Shape {
+            t: t.into(),
+            a: pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+        }
+    }
+
+    fn glyph(shapes: Vec<Shape>) -> Glyph {
+        Glyph { w: 24.0, h: 24.0, shapes }
+    }
+
+    fn refuse(g: &Glyph) -> String {
+        match validate_glyph(g) {
+            Ok(_) => panic!("a glyph that should have been refused was accepted"),
+            Err(e) => e,
+        }
+    }
+
+    /// The ordinary case: a real icon, copied from a real set, survives.
+    ///
+    /// Both paint models, because half of Iconify is filled shapes and the other
+    /// half is stroked ones -- and an icon that lost its stroke attributes would
+    /// come out as a solid blob rather than as a drawing.
+    #[test]
+    fn a_real_icon_of_either_paint_model_is_kept() {
+        // simple-icons:jellyfin, filled.
+        let filled = glyph(vec![shape(
+            "path",
+            &[("fill", "currentColor"), ("d", "M12 .002C8.826.002-1.398 18.537.16 21.666z")],
+        )]);
+        assert_eq!(validate_glyph(&filled).unwrap().shapes.len(), 1);
+
+        // lucide:house, stroked -- every one of these attributes has to survive.
+        let stroked = glyph(vec![shape(
+            "path",
+            &[
+                ("fill", "none"),
+                ("stroke", "currentColor"),
+                ("stroke-width", "2"),
+                ("stroke-linecap", "round"),
+                ("stroke-linejoin", "round"),
+                ("d", "M3 10.5 12 3l9 7.5V21H3z"),
+            ],
+        )]);
+        let out = validate_glyph(&stroked).unwrap();
+        assert_eq!(out.shapes[0].a.get("stroke-width").map(String::as_str), Some("2"));
+        assert_eq!(out.shapes[0].a.get("fill").map(String::as_str), Some("none"));
+    }
+
+    /// Every shape this build draws, with its own geometry, is accepted -- and
+    /// geometry belonging to a different shape is not. A `cx` on a `rect` is not
+    /// dangerous, it is a client that has misunderstood the format, and saying so
+    /// is better than storing an attribute that will never be read.
+    #[test]
+    fn each_shape_carries_only_its_own_geometry() {
+        assert!(validate_glyph(&glyph(vec![shape("circle", &[("cx", "12"), ("cy", "12"), ("r", "9")])])).is_ok());
+        assert!(validate_glyph(&glyph(vec![shape("rect", &[("x", "3"), ("y", "3"), ("width", "18"), ("height", "18"), ("rx", "2")])])).is_ok());
+        assert!(validate_glyph(&glyph(vec![shape("line", &[("x1", "0"), ("y1", "0"), ("x2", "24"), ("y2", "24")])])).is_ok());
+        assert!(validate_glyph(&glyph(vec![shape("polygon", &[("points", "12,2 22,20 2,20")])])).is_ok());
+        assert!(validate_glyph(&glyph(vec![shape("ellipse", &[("cx", "12"), ("cy", "12"), ("rx", "9"), ("ry", "5")])])).is_ok());
+
+        let e = refuse(&glyph(vec![shape("rect", &[("cx", "12")])]));
+        assert!(e.contains("rect"), "{e}");
+    }
+
+    /// **The test this whole feature rests on.** Every one of these is a way to
+    /// get script execution out of an SVG, and every one of them is a string that
+    /// would be stored and later put back into a document if this validator let
+    /// it through. The desk's own origin is the one whose login form takes a
+    /// system password, so this is not a theoretical severity.
+    ///
+    /// Note what is being asserted: not that these particular strings are caught,
+    /// but that the *shape* of the format has no room for them. A `d` is an
+    /// alphabet of path commands and numbers; a tag is one of seven names.
+    #[test]
+    fn nothing_that_could_execute_survives() {
+        // Elements that are not shapes, whatever they carry.
+        for tag in ["script", "foreignObject", "image", "use", "a", "animate", "set",
+                    "style", "iframe", "linearGradient", "svg", "g"] {
+            let e = refuse(&glyph(vec![shape(tag, &[("d", "M0 0")])]));
+            assert!(e.contains(tag), "{tag}: {e}");
+        }
+
+        // Attributes that are not geometry or paint, on a tag that is.
+        for (k, v) in [
+            ("onload", "alert(1)"),
+            ("onclick", "alert(1)"),
+            ("href", "javascript:alert(1)"),
+            ("xlink:href", "javascript:alert(1)"),
+            ("style", "background:url(javascript:alert(1))"),
+            ("id", "x"),
+            ("class", "y"),
+            ("requiredExtensions", "z"),
+        ] {
+            let e = refuse(&glyph(vec![shape("path", &[("d", "M0 0"), (k, v)])]));
+            assert!(e.contains(k), "{k}: {e}");
+        }
+
+        // A `d` that is not a path. There is no syntax in the command alphabet
+        // for any of this, which is the point -- it is refused for containing
+        // characters a path cannot contain, not for matching a pattern somebody
+        // thought of.
+        for d in [
+            "M0 0\"/><script>alert(1)</script><path d=\"M0 0",
+            "url(#x)",
+            "javascript:alert(1)",
+            "M0 0 L1 1 <!--",
+            "M0 0&#59;",
+        ] {
+            assert!(refuse(&glyph(vec![shape("path", &[("d", d)])])).contains('d'));
+        }
+    }
+
+    /// Monochrome is enforced here and not only in the browser. A paint value
+    /// that is anything but `currentColor` or `none` is refused, which disposes
+    /// of `url(#gradient)` without a rule of its own -- there are no gradients to
+    /// point at, so a reference to one could only dangle.
+    #[test]
+    fn paint_is_currentcolor_or_nothing() {
+        for bad in ["#ff0000", "red", "url(#grad)", "rgb(1,2,3)", "inherit"] {
+            let e = refuse(&glyph(vec![shape("path", &[("d", "M0 0"), ("fill", bad)])]));
+            assert!(e.contains("fill"), "{bad}: {e}");
+        }
+        assert!(validate_glyph(&glyph(vec![shape("path", &[("d", "M0 0"), ("fill", "currentColor")])])).is_ok());
+        assert!(validate_glyph(&glyph(vec![shape("path", &[("d", "M0 0"), ("fill", "none")])])).is_ok());
+    }
+
+    /// `transform` is kept because some sets draw a rotated variant by
+    /// transforming the base shape, and dropping it would paste an icon that
+    /// came out the wrong way round. It is the one attribute here whose value has
+    /// words in it, so the words are an allow-list of six.
+    #[test]
+    fn a_transform_may_only_name_the_six_functions() {
+        for ok in ["rotate(45 12 12)", "translate(2,3) scale(1.5)", "matrix(1 0 0 1 0 0)", "skewX(10)"] {
+            assert!(
+                validate_glyph(&glyph(vec![shape("path", &[("d", "M0 0"), ("transform", ok)])])).is_ok(),
+                "{ok} was refused"
+            );
+        }
+        for bad in ["url(#x)", "attr(href)", "rotate(45) url(#y)", "expression(alert(1))", "translate(1);x"] {
+            let e = refuse(&glyph(vec![shape("path", &[("d", "M0 0"), ("transform", bad)])]));
+            assert!(e.contains("transform"), "{bad}: {e}");
+        }
+    }
+
+    /// A viewBox is what the geometry means. Without a usable one the shapes are
+    /// numbers on no grid, and the icon draws at whatever size the browser
+    /// guesses -- which is how a paste ends up as a full-window smear.
+    #[test]
+    fn a_glyph_without_a_usable_grid_is_refused() {
+        for (w, h) in [(0.0, 24.0), (24.0, 0.0), (-24.0, 24.0), (f32::NAN, 24.0),
+                       (f32::INFINITY, 24.0), (99999.0, 24.0)] {
+            let g = Glyph { w, h, shapes: vec![shape("path", &[("d", "M0 0")])] };
+            assert!(refuse(&g).contains("viewBox"), "{w}x{h} was accepted");
+        }
+        assert!(validate_glyph(&Glyph { w: 512.0, h: 512.0, shapes: vec![shape("path", &[("d", "M0 0")])] }).is_ok());
+    }
+
+    /// An icon with nothing in it, and one with far too much. Neither is an
+    /// attack; both are a `links.json` that costs something to parse on every
+    /// dock paint for no drawing in return.
+    #[test]
+    fn an_empty_or_enormous_glyph_is_refused() {
+        assert!(refuse(&glyph(vec![])).contains("nothing to draw"));
+        let many: Vec<Shape> = (0..MAX_SHAPES + 1).map(|_| shape("path", &[("d", "M0 0")])).collect();
+        assert!(refuse(&glyph(many)).contains("shapes"));
+        // A shape with no attributes at all draws nothing and is a client bug.
+        assert!(refuse(&glyph(vec![shape("path", &[])])).contains("geometry"));
+        // And one enormous path rather than many small ones.
+        let huge = "M0 0 ".repeat(4000);
+        assert!(refuse(&glyph(vec![shape("path", &[("d", &huge)])])).contains('d'));
+    }
+
+    /// A link keeps its built-in mark even when it has a pasted one, so a build
+    /// that has never heard of glyphs still draws something -- and so clearing
+    /// the paste has somewhere to fall back to without a second request.
+    #[test]
+    fn a_pasted_icon_never_replaces_the_fallback_mark() {
+        let mut b = body("https://example.com/");
+        b.glyph = Some(glyph(vec![shape("path", &[("d", "M0 0"), ("fill", "currentColor")])]));
+        let l = validate(&b, None).unwrap();
+        assert_eq!(l.icon, DEFAULT_ICON, "the sprite mark must survive a paste");
+        assert!(l.glyph.is_some());
+
+        // And a refused glyph fails the whole link rather than being dropped
+        // quietly, which would store a link drawn with an icon nobody chose.
+        b.glyph = Some(glyph(vec![shape("script", &[("d", "M0 0")])]));
+        assert!(validate(&b, None).is_err());
     }
 
     /// A host with a port and one without are the same host. `[::1]` keeps its
