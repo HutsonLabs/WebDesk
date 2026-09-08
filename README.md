@@ -274,6 +274,9 @@ one. Deleting it costs nothing but a cold build next update.
   own, opening in a window like everything else — or in a browser tab, for the
   many sites that refuse to be framed. Nothing is installed and nothing runs on
   the host. See [Apps](#apps).
+- **Apps** — one grid of everything this desk can open: Files, Terminal, System
+  and every link, drawn as the tiles the dock draws, in the order the dock draws
+  them. Behind each link's tile is a page of its own. See [Apps](#apps).
 - **Account** — one button in the upper left, carrying no text: the username is
   its tooltip. It drops a two-row menu — the username again, which opens
   System, and Sign out.
@@ -339,10 +342,25 @@ There are two kinds and neither of them is installed.
 both served by the binary itself. See [What it does](#what-it-does).
 
 **Links.** Anything else you already run: a name, an address, an icon. Open
-**Links** from the dock, press *Add a link*, and type `localhost:8096` or
-`https://gmail.com`. It gets a tile beside Files and Terminal and opens in a
-window with that page in it — or in a browser tab, for the many sites that
-refuse to be framed. See [docs/links.md](docs/links.md).
+**Apps** from the dock, take the dashed *Add a link* tile, and type
+`localhost:8096` or `https://gmail.com`. It gets a tile beside Files and
+Terminal and opens in a window with that page in it — or in a browser tab, for
+the many sites that refuse to be framed. See [docs/links.md](docs/links.md).
+
+**Apps is the grid that shows all of them**, built-ins included, which is a
+thing no window did before: Files and Terminal were reachable only from the
+dock, System only from the account menu, and links only from a list of their
+own. One grid, unheaded — a desk with eight tiles on it does not need a filing
+system. Clicking a tile opens it; the chevron in its corner — or a right-click —
+turns it over to a page carrying what a tile cannot say on its face: the whole
+address, whether the frame is actually going to work, and who else on this host
+is looking at the same tile.
+
+It was a list of rows until it was a grid, and the rows were the catalog's rows.
+A row is the right shape when every one of them carries a description and three
+different verbs; a link carries a name and an address, so twenty of them were
+twenty repetitions down a window that was half whitespace — beside a dock that
+was already drawing the same things, better, as tiles.
 
 **WebDesk used to run applications for you, twice, and both attempts are gone.**
 First as containers from a fixed list of images, reverse-proxied onto this origin
@@ -559,7 +577,7 @@ The bar in the corner has four controls:
 
 | | |
 | --- | --- |
-| **Scene** | jump to a state — sign-in, a failed sign-in, the file manager, the editor, the terminal, System with an update pending / running / failed, a non-admin session, a permission-denied listing, four windows at once, the rename and delete dialogs, Links with some / with none / as a non-admin |
+| **Scene** | jump to a state — sign-in, a failed sign-in, the file manager, the editor, the terminal, System with an update pending / running / failed, a non-admin session, a permission-denied listing, four windows at once, the rename and delete dialogs, Apps with links / with none / as a non-admin, a link's own page |
 | **Viewport** | render at phone, tablet or laptop size without resizing the window |
 | **Inspect** (⌥I) | click any pixel; the `ui/` file and line that style and build it are copied to the clipboard |
 | **↻** | reload — though saving anything under `ui/` already reloads the tab |

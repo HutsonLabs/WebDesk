@@ -103,3 +103,19 @@ Title bar hidden = <svg xmlns="http://www.w3.org/2000/svg" width="640" height="6
 Window layout = <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
 	<path fill="currentColor" d="M15.346 8.654v2.285a1.25 1.25 0 0 0 2.5 0V8.18c0-.117 0-.27-.01-.405a1.8 1.8 0 0 0-.18-.665a1.75 1.75 0 0 0-.765-.764a1.8 1.8 0 0 0-.665-.18a5 5 0 0 0-.405-.011h-2.76a1.25 1.25 0 1 0 0 2.5zM7.404 11.81c.69 0 1.25.56 1.25 1.25v2.285h2.285a1.25 1.25 0 0 1 0 2.5H8.18c-.117 0-.27 0-.405-.01a1.8 1.8 0 0 1-.665-.18a1.75 1.75 0 0 1-.764-.765a1.8 1.8 0 0 1-.18-.665c-.011-.136-.011-.288-.011-.405v-2.76c0-.69.56-1.25 1.25-1.25" />
 </svg>
+
+## Apps grid
+
+Neither of these is an application. Drawn by hand on the same 24 grid at the
+same 1.5px as everything above, so they stand in a grid of app icons without
+announcing themselves.
+
+Add a link = <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+	<path d="M0 0h24v24H0z" fill="none" />
+	<path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 5v14M5 12h14" />
+</svg>
+
+Tile details = <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+	<path d="M0 0h24v24H0z" fill="none" />
+	<path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="m10 7l5 5l-5 5" />
+</svg>

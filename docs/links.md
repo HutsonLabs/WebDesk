@@ -445,10 +445,24 @@ Terminal and then these.
 
 ## What the UI does
 
-- **Links window** (the dock's third built-in): a list, an **Add a link**
-  button, and Open / Edit / Remove on each row. A row says the address, whether
-  it opens framed or in a tab, and -- only when it is shared -- that everyone on
-  this host sees it. `editable` decides whether Edit and Remove are drawn.
+- **Apps window** (the dock's first built-in): one grid of tiles in the order
+  the dock is in -- Files, Terminal and System, then the host-wide links, then
+  your own, then a dashed **Add a link** tile. Clicking a tile opens it; alt- or
+  middle-click opens another, the same gesture the dock takes. No headings: a
+  desk with eight tiles on it does not need a filing system, and scope is on a
+  link's own page, where somebody goes when they want to know it.
+- **A page behind each link**, reached by the chevron in a tile's corner or by
+  right-clicking it: the address in full, how it will open, who else can see it,
+  the window size, and then Open / Open in a tab / Edit / Remove. `editable`
+  decides whether Edit and Remove are drawn, and a link somebody else published
+  says so in a line instead of simply losing two buttons.
+
+  This was a list of rows, and they were the rows the app catalog left behind. A
+  row earns its width when each one carries a description and Install, Start and
+  Stop; a link is a name and an address, so the rows were a column of identical
+  shapes wearing identical buttons. Everything the sub-line carried is on the
+  page now, in sentences, where there is room to say why an `http://` tile will
+  not frame rather than to leave it as three words after a dot.
 - **The form** is one dialog for adding and editing, with the ten built-in marks
   as a row and a dashed eleventh button that opens the paste box. Under the
   address is a live line that says the two things a person cannot see for
