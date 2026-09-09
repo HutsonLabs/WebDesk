@@ -364,14 +364,109 @@ async fn fs_write(
 
 // -------------------------------------------------------------------- assets
 
-async fn static_asset(uri: axum::http::Uri) -> Response {
+/// The content hash rust-embed already computed for this file at build time,
+/// as a strong ETag. Two builds that embed the same bytes send the same tag, so
+/// an update that changes one asset only invalidates that one.
+fn etag_of(f: &rust_embed::EmbeddedFile) -> String {
+    let mut tag = String::with_capacity(66);
+    tag.push('"');
+    for b in f.metadata.sha256_hash() {
+        use std::fmt::Write;
+        let _ = write!(tag, "{b:02x}");
+    }
+    tag.push('"');
+    tag
+}
+
+/// Whether an `If-None-Match` header claims the tag we are about to send. The
+/// header is a comma-separated list and may be `*`; a `W/` prefix is a weak
+/// tag, which is still a match for the freshness question being asked here.
+fn none_match(raw: &str, etag: &str) -> bool {
+    raw.split(',')
+        .map(|t| t.trim())
+        .any(|t| t == "*" || t == etag || t.strip_prefix("W/").is_some_and(|t| t == etag))
+}
+
+/* The desk is one HTML file and one script, and the browser is told nothing
+   about either -- so it applies its own heuristics and can hold one while
+   refetching the other. index.html and app.js agree about things like the
+   `data-app` key on a dock button; a browser holding half of one build and half
+   of the next does not, and the symptom is a button that does nothing.
+
+   `no-cache` is not "do not store": it stores as before and asks first, which
+   with an ETag is a 304 and no bytes. The cost is one conditional request per
+   asset per load; the thing it buys is that an update is actually the thing you
+   are looking at. */
+async fn static_asset(uri: axum::http::Uri, headers: HeaderMap) -> Response {
     let path = uri.path().trim_start_matches('/');
     let path = if path.is_empty() { "index.html" } else { path };
     match Ui::get(path) {
         Some(f) => {
+            let etag = etag_of(&f);
+            let fresh = headers
+                .get(header::IF_NONE_MATCH)
+                .and_then(|v| v.to_str().ok())
+                .is_some_and(|raw| none_match(raw, &etag));
+            if fresh {
+                return (
+                    StatusCode::NOT_MODIFIED,
+                    [(header::CACHE_CONTROL, "no-cache"), (header::ETAG, etag.as_str())],
+                )
+                    .into_response();
+            }
             let mime = mime_guess::from_path(path).first_or_octet_stream();
-            ([(header::CONTENT_TYPE, mime.to_string())], f.data.into_owned()).into_response()
+            (
+                [
+                    (header::CONTENT_TYPE, mime.to_string()),
+                    (header::CACHE_CONTROL, "no-cache".to_string()),
+                    (header::ETAG, etag),
+                ],
+                f.data.into_owned(),
+            )
+                .into_response()
         }
         None => (StatusCode::NOT_FOUND, "not found").into_response(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn two_assets_do_not_share_a_tag_and_one_asset_keeps_its_own() {
+        let html = Ui::get("index.html").expect("index.html is embedded");
+        let js = Ui::get("app.js").expect("app.js is embedded");
+        assert_ne!(etag_of(&html), etag_of(&js));
+        assert_eq!(etag_of(&html), etag_of(&Ui::get("index.html").unwrap()));
+    }
+
+    #[test]
+    fn a_tag_is_a_quoted_hex_digest() {
+        let tag = etag_of(&Ui::get("index.html").unwrap());
+        assert!(tag.starts_with('"') && tag.ends_with('"'));
+        assert_eq!(tag.len(), 66);
+        assert!(tag[1..65].chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn a_browser_holding_the_tag_we_are_about_to_send_is_told_it_is_fresh() {
+        let tag = "\"abc\"";
+        assert!(none_match(tag, tag));
+        assert!(none_match("*", tag));
+        assert!(none_match("W/\"abc\"", tag));
+        assert!(none_match("\"old\", \"abc\"", tag));
+    }
+
+    #[test]
+    fn a_browser_holding_the_previous_build_is_not_told_it_is_fresh() {
+        let tag = "\"abc\"";
+        assert!(!none_match("\"old\"", tag));
+        assert!(!none_match("", tag));
+        // The whole point of the change: a stale index.html must not be served
+        // back alongside a fresh app.js.
+        let html = etag_of(&Ui::get("index.html").unwrap());
+        let js = etag_of(&Ui::get("app.js").unwrap());
+        assert!(!none_match(&js, &html));
     }
 }
