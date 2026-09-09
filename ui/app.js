@@ -3710,6 +3710,18 @@ const APPS = {
 
 document.querySelectorAll('.dock-btn[data-app]').forEach((b) => {
   const app = b.dataset.app;
+  // A dock button naming an app this table does not have is a build that
+  // disagrees with itself -- index.html from one version and app.js from
+  // another, which is what a browser holding a stale copy of either produces.
+  // Left alone it is a button that throws where nobody is looking and appears
+  // simply not to work, so say which key is missing and leave the button dead
+  // rather than dead and quiet.
+  if (typeof APPS[app] !== 'function') {
+    console.error(`webdesk: dock button "${app}" has no app behind it; ` +
+      'index.html and app.js are probably from different builds. Reload ' +
+      'bypassing the cache (Shift-Reload).');
+    return;
+  }
   // Alt- or middle-click asks for another window rather than the one that is
   // already there.
   onTap(b, (e) => activateApp(app, APPS[app], e.altKey || e.metaKey));
