@@ -33,9 +33,10 @@ const SCENES = {
   'files-empty': { label: 'Files — empty folder', signedIn: true, open: ['files'], emptyDir: true },
   'dialog-rename': { label: 'Dialog — rename', signedIn: true, open: ['files'], dialog: 'rename' },
   'dialog-delete': { label: 'Dialog — delete', signedIn: true, open: ['files'], dialog: 'delete' },
-  links: { label: 'Links', signedIn: true, open: ['links'] },
-  'links-empty': { label: 'Links — none yet', signedIn: true, open: ['links'], links: 'none' },
-  'links-guest': { label: 'Links — not an admin', signedIn: true, open: ['links'], admin: false },
+  apps: { label: 'Apps', signedIn: true, open: ['apps'] },
+  'apps-empty': { label: 'Apps — no links yet', signedIn: true, open: ['apps'], links: 'none' },
+  'apps-guest': { label: 'Apps — not an admin', signedIn: true, open: ['apps'], admin: false },
+  'apps-detail': { label: 'Apps — a link\'s page', signedIn: true, open: ['apps'], page: 'detail' },
 };
 
 const params = new URLSearchParams(location.search);

@@ -74,7 +74,7 @@ html,body{touch-action:manipulation;}
    it is turned off on the surfaces that listen for the press. The selection
    that a long press starts goes with it: there is no text on any of these that
    anyone means to select. */
-.win-bar,.frow,.dock-btn,.windows{
+.win-bar,.frow,.dock-btn,.grid-tile,.windows{
   -webkit-touch-callout:none;
   -webkit-user-select:none;user-select:none;
 }
@@ -656,25 +656,76 @@ html{-webkit-tap-highlight-color:transparent;}
   white-space:pre-wrap;overflow-wrap:anywhere;
 }
 
-/* ---------------- links ---------------- */
-/* The Links window reuses the System window's frame -- .sys and its bar and
+/* ---------------- apps ---------------- */
+/* The Apps window reuses the System window's frame -- .sys and its bar and its
    scroll -- because it is the same kind of thing: a bar with an action in it
-   and a list under it. The class names are still `apps-` because these rows are
-   the same rows the Apps window drew, and renaming them would be a diff across
-   two files that changed no pixel. */
-.apps-group{display:flex;flex-direction:column;gap:6px;flex:0 0 auto;}
-.apps-list{display:flex;flex-direction:column;gap:4px;}
-.apps-row{
-  display:flex;align-items:center;gap:10px;padding:9px 10px;
-  background:var(--surface);border:1px solid var(--line);border-radius:8px;
+   and a body under it. What is in the body is a grid now.
+
+   It was a list of `.apps-row`s, and those were the catalog's rows, kept after
+   the catalog went. A row is right when each one carries a description and
+   three different verbs; a link carries a name and an address, so twenty rows
+   were twenty repetitions of the same shape down a window that was half
+   whitespace. The tiles below are the dock's tiles at rest -- same square, same
+   radius, same hover -- so an app looks like itself in both places. */
+.grid-hint{margin:0;font-size:.78rem;line-height:1.5;color:var(--muted);max-width:52ch;flex:0 0 auto;}
+/* auto-fill, not auto-fit: four apps should sit at the left edge in columns the
+   same width as everybody else's, not stretch across the window because there
+   are only four of them. */
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(94px,1fr));gap:6px;}
+.grid-cell{position:relative;}
+.grid-tile{
+  width:100%;height:92px;padding:10px 6px 8px;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;
+  border:1px solid transparent;border-radius:12px;
+  background:transparent;color:var(--text);
+  transition:background .14s ease,border-color .14s ease;
 }
-.apps-icon{display:grid;place-items:center;width:26px;height:26px;flex:0 0 auto;color:var(--muted);}
-.apps-icon .ic-a{width:19px;height:19px;}
-.apps-text{min-width:0;flex:1;display:flex;flex-direction:column;gap:2px;}
-.apps-name{font-size:.84rem;font-weight:500;}
-.apps-sub{font-size:.72rem;color:var(--muted);overflow-wrap:anywhere;}
-.apps-acts{display:flex;align-items:center;gap:6px;flex:0 0 auto;}
-.apps-empty{font-size:.8rem;color:var(--muted);padding:6px 2px;}
+.grid-tile:active{background:rgba(255,255,255,.09);border-color:rgba(255,255,255,.10);}
+@media (hover:hover){
+  .grid-tile:hover{background:rgba(255,255,255,.09);border-color:rgba(255,255,255,.10);}
+}
+.grid-tile:focus-visible{outline:2px solid var(--accent);outline-offset:-1px;}
+.ic-t{width:28px;height:28px;display:block;flex:0 0 auto;}
+/* Two lines and then an ellipsis. "Home Assistant" is an ordinary name and
+   wrapping it is cheaper than truncating it; a name long enough to need three
+   lines would set the height of every tile in the window. */
+.grid-name{
+  font-size:.76rem;line-height:1.3;text-align:center;overflow:hidden;
+  display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;line-clamp:2;
+  overflow-wrap:anywhere;
+}
+/* The tile that adds one. Dashed rather than filled, because it is the outline
+   of a tile that is not there yet. */
+.grid-tile--add{border:1px dashed var(--line);color:var(--muted);}
+@media (hover:hover){.grid-tile--add:hover{border-style:dashed;border-color:var(--muted);color:var(--text);}}
+/* The corner button that turns a tile over. A sibling of the tile rather than a
+   child, because a button inside a button is not HTML -- so it is positioned
+   over the corner instead. It is always in the tab order; it only becomes
+   visible under a pointer, which has the tile's name beside it to read. */
+.grid-more{
+  position:absolute;top:2px;right:2px;width:22px;height:22px;padding:0;
+  display:grid;place-items:center;border:0;border-radius:6px;
+  background:transparent;color:var(--muted);opacity:0;
+  transition:opacity .14s ease,color .14s ease,background .14s ease;
+}
+.ic-s{width:14px;height:14px;display:block;}
+.grid-more:active{background:rgba(255,255,255,.10);color:var(--text);}
+@media (hover:hover){
+  .grid-cell:hover .grid-more{opacity:1;}
+  .grid-more:hover{background:rgba(255,255,255,.10);color:var(--text);}
+}
+/* Not `opacity:0` for the keyboard: an invisible focus ring is the same as no
+   focus ring, so focus brings it out the way a pointer does. */
+.grid-more:focus-visible{opacity:1;outline:2px solid var(--accent);outline-offset:1px;}
+/* Coarse pointers have no hover to reveal it with, and a long-press is the
+   browser's own gesture here rather than ours. It stays out. */
+@media (hover:none){.grid-more{opacity:1;}}
+
+/* The page behind a tile: what a link cannot say on its own face. */
+.detail-head{display:flex;align-items:center;gap:12px;flex:0 0 auto;}
+.ic-x{width:38px;height:38px;display:block;flex:0 0 auto;}
+.detail-name{margin:0;font-size:1.05rem;font-weight:500;overflow-wrap:anywhere;}
+.detail-acts{display:flex;flex-wrap:wrap;align-items:center;gap:6px;flex:0 0 auto;}
 /* A link's window is one iframe and nothing else. The border-radius is the
    window's, not the frame's, so the page's own background cannot square off the
    corners. Positioned, so the veil over it has something to be absolute

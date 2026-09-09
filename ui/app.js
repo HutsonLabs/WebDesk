@@ -3297,10 +3297,43 @@ function linkForm(existing) {
   });
 }
 
-function openLinks() {
+/* --------------------------------------------------------------- apps ---*/
+
+/* Everything this desk can open, in one grid, with a page behind each link.
+
+   This window was a list of rows, and the rows were the catalog's rows: a row
+   earned its width back when each one carried a description, a screenshot and
+   Install, Start and Stop. A link is a name and an address. Twenty of them made
+   twenty near-identical rows wearing three identical buttons, in a window whose
+   other half was whitespace -- while the dock was already drawing the same
+   objects as tiles, and better. So the grid draws them the way the dock does,
+   and everything the sub-line was carrying moved onto a page of its own, where
+   there is room to say it in sentences instead of in three words after a dot.
+
+   The built-ins are in the grid too, which is the part that did not exist
+   before in any window: Files and Terminal were dock-only, System was two
+   clicks into the account menu, and links were in here. "What can I open" now
+   has one place that answers it. */
+
+const APPS_EMPTY =
+  'Nothing here yet. Add anything this machine — or your network — already ' +
+  'serves. Nothing is installed and nothing runs on the host: a link is a name ' +
+  'and an address, and your browser is what fetches the page.';
+
+/* The desk's own three, in the shape the grid draws links in. Built from APPS
+   rather than beside it, so a tile and the dock button above it cannot come to
+   disagree about what clicking the same app does. */
+const shellApps = () => [
+  { name: 'Files', icon: 'a-files', run: (alt) => activateApp('files', APPS.files, alt) },
+  { name: 'Terminal', icon: 'a-terminal', run: (alt) => activateApp('terminal', APPS.terminal, alt) },
+  { name: 'System', icon: 'a-user', run: () => APPS.system() },
+];
+
+function openApps() {
   return createWindow({
-    title: 'Links',
-    app: 'links',
+    title: 'Apps',
+    app: 'apps',
+    titleIcon: 'a-apps',
     width: 660,
     height: 520,
     build(entry) {
@@ -3308,81 +3341,233 @@ function openLinks() {
       root.className = 'sys';
       root.innerHTML = `
         <div class="sys-bar">
-          <button class="fbtn go" data-a="add">Add a link</button>
+          <button class="fbtn" data-a="back" hidden>Back</button>
           <button class="fbtn" data-a="refresh">Refresh</button>
           <span class="sys-state" data-el="state"></span>
         </div>
-        <div class="sys-scroll">
-          <div class="apps-group">
-            <div class="apps-list" data-el="list"></div>
-          </div>
-        </div>`;
+        <div class="sys-scroll" data-el="grid"></div>
+        <div class="sys-scroll" data-el="detail" hidden></div>`;
       entry.body.appendChild(root);
       const $ = (n) => root.querySelector(`[data-el="${n}"]`);
+      const btn = (a) => root.querySelector(`[data-a="${a}"]`);
       let live = true;
+      // Which link the second page is showing, by id rather than by object: a
+      // refresh replaces every link in `links` with a new one carrying the same
+      // id, and holding the old object would leave the page showing what the
+      // server has just stopped saying.
+      let detailId = null;
 
-      function row(link) {
-        const el = document.createElement('div');
-        el.className = 'apps-row';
+      /* ------------------------------------------------------------ tiles */
 
-        const icon = document.createElement('span');
-        icon.className = 'apps-icon';
-        icon.appendChild(iconSvgFor(linkIcon(link), 'ic-a'));
+      /* One tile: a button for the app, and -- for a link -- a second button
+         over its corner for the page behind it. Two buttons rather than one
+         with a menu on it, because a tile has exactly two things to do and a
+         button inside a button is not HTML. */
+      function tile({ name, icon, run, aux, detail, cls }) {
+        const cell = document.createElement('div');
+        cell.className = 'grid-cell';
 
-        const text = document.createElement('div');
-        text.className = 'apps-text';
-        const nm = document.createElement('div');
-        nm.className = 'apps-name';
-        nm.textContent = link.name;
-        const sub = document.createElement('div');
-        sub.className = 'apps-sub';
-        // The address, then how it opens, then who else can see it. A personal
-        // link says nothing about scope, because "just me" is the ordinary case
-        // and labelling it would only make the shared ones harder to spot.
-        const bits = [link.url];
-        bits.push(link.open === 'tab' ? 'opens in a tab' : 'opens in a window');
-        if (link.scope === 'host') bits.push('everyone on this host');
-        sub.textContent = bits.join(' · ');
-        text.append(nm, sub);
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'grid-tile' + (cls ? ' ' + cls : '');
+        b.appendChild(iconSvgFor(icon, 'ic-t'));
+        const nm = document.createElement('span');
+        nm.className = 'grid-name';
+        nm.textContent = name;
+        b.appendChild(nm);
+        // Alt- or middle-click means "another one" here for the same reason it
+        // does in the dock: it is the gesture the browser already trained, and
+        // for a link it is the fastest way out of a page that will not frame.
+        onTap(b, (e) => run(e.altKey || e.metaKey));
+        if (aux) {
+          b.addEventListener('auxclick', (e) => {
+            if (e.button === 1) { e.preventDefault(); aux(); }
+          });
+        }
+        cell.appendChild(b);
+
+        if (detail) {
+          const d = document.createElement('button');
+          d.type = 'button';
+          d.className = 'grid-more';
+          d.setAttribute('aria-label', name + ' — details');
+          d.appendChild(iconSvgFor('a-chevron', 'ic-s'));
+          onTap(d, detail);
+          cell.appendChild(d);
+          // The pointer gesture people already try on a tile. It is the same
+          // page the corner button opens, so nothing is only reachable this way.
+          b.addEventListener('contextmenu', (e) => { e.preventDefault(); detail(); });
+        }
+        return cell;
+      }
+
+      const linkTile = (l) => tile({
+        name: l.name,
+        icon: linkIcon(l),
+        run: (alt) => openLink(l, alt),
+        aux: () => openLink(l, true),
+        detail: () => goDetail(l),
+      });
+
+      /* One grid, in the order the dock is in: the desk's own three, then the
+         host-wide links, then yours, then the square that adds one.
+
+         There were headed groups here for a moment -- Built in, On this host,
+         Yours. Three headings over eight tiles is a filing system for a drawer
+         that does not need one, and it made the window taller than the thing it
+         was showing. Scope is on a link's own page, which is where somebody
+         goes when they want to know it. */
+      function render() {
+        const grid = $('grid');
+        grid.textContent = '';
+
+        if (!links.length) {
+          const p = document.createElement('p');
+          p.className = 'grid-hint';
+          p.textContent = APPS_EMPTY;
+          grid.appendChild(p);
+        }
+
+        const g = document.createElement('div');
+        g.className = 'grid';
+        for (const a of shellApps()) g.appendChild(tile(a));
+        for (const l of links.filter((x) => x.scope === 'host')) g.appendChild(linkTile(l));
+        for (const l of links.filter((x) => x.scope !== 'host')) g.appendChild(linkTile(l));
+        g.appendChild(tile({
+          name: 'Add a link',
+          icon: 'a-plus',
+          cls: 'grid-tile--add',
+          run: () => add(),
+        }));
+        grid.appendChild(g);
+        $('state').textContent = '';
+      }
+
+      /* ----------------------------------------------------------- detail */
+
+      function kv(label, value, mono) {
+        const k = document.createElement('div');
+        k.className = 'sys-k';
+        k.textContent = label;
+        const v = document.createElement('div');
+        v.className = 'sys-v' + (mono ? ' mono' : '');
+        v.textContent = value;
+        const frag = document.createDocumentFragment();
+        frag.append(k, v);
+        return frag;
+      }
+
+      /* The page behind a tile. It exists because these are the things a link
+         cannot say on its own face and a person needs before clicking it: where
+         it actually points, whether the frame is going to work, and who else is
+         looking at the same tile. */
+      function paintDetail(link) {
+        const d = $('detail');
+        d.textContent = '';
+
+        const head = document.createElement('div');
+        head.className = 'detail-head';
+        head.appendChild(iconSvgFor(linkIcon(link), 'ic-x'));
+        const h = document.createElement('h2');
+        h.className = 'detail-name';
+        h.textContent = link.name;
+        head.appendChild(h);
+        d.appendChild(head);
+
+        // What "Open" is about to do, decided the same way openLink decides it
+        // rather than read off link.open -- which is a preference, and the
+        // mixed-content rule below overrules it.
+        const framed = link.open !== 'tab' && frameable(link.url);
+
+        const info = document.createElement('div');
+        info.className = 'sys-info';
+        info.append(
+          kv('Address', link.url, true),
+          kv('Opens', framed ? 'In a window on this desk' : 'In a browser tab'),
+          kv('Visible to', link.scope === 'host' ? 'Everyone on this host' : 'Just you'),
+        );
+        if (framed) {
+          info.append(kv('Window', `${link.width || 1200} × ${link.height || 800}`));
+        }
+        d.appendChild(info);
+
+        const note = (text) => {
+          const el = document.createElement('div');
+          el.className = 'sys-note';
+          el.textContent = text;
+          d.appendChild(el);
+        };
+
+        // Set to frame, and it will not: a secure page may not load an insecure
+        // subresource, so the browser blocks this one before any request. Said
+        // here rather than watched for, because a blocked frame still fires
+        // `load` and there is nothing to watch.
+        if (link.open !== 'tab' && !framed) {
+          note(`Set to open in a window, and it cannot: ${urlHost(link.url)} is http:// ` +
+            'and this desk is https://. The browser blocks that frame before any request ' +
+            'is made, so it opens in a tab instead.');
+        }
+        // The sharpest thing about this feature and the least obvious.
+        if (LOOPBACK.test(hostOf(link.url))) {
+          note('localhost is the machine your browser is on, not the machine WebDesk ' +
+            'runs on. This one is right while you are sitting at the server and silently ' +
+            'wrong from anywhere else.');
+        }
+        if (!link.editable) {
+          note('Published for everyone on this host. An administrator can change it.');
+        }
 
         const acts = document.createElement('div');
-        acts.className = 'apps-acts';
-        const button = (label, fn, cls) => {
+        acts.className = 'detail-acts';
+        const act = (label, fn, cls) => {
           const b = document.createElement('button');
           b.type = 'button';
           b.className = 'fbtn' + (cls ? ' ' + cls : '');
           b.textContent = label;
           onTap(b, fn);
           acts.appendChild(b);
-          return b;
         };
-        button('Open', () => openLink(link, false));
+        act('Open', () => openLink(link, false), 'go');
+        // Only when it is a second thing to do. For a link that opens in a tab
+        // anyway, one button that says Open is the honest count.
+        if (framed) act('Open in a tab', () => openLink(link, true));
         if (link.editable) {
-          button('Edit', () => edit(link));
-          button('Remove', () => remove(link), 'danger');
+          act('Edit', () => edit(link));
+          act('Remove', () => remove(link), 'danger');
         }
-
-        el.append(icon, text, acts);
-        return el;
+        d.appendChild(acts);
       }
 
-      function render() {
-        const list = $('list');
-        list.textContent = '';
-        if (!links.length) {
-          const empty = document.createElement('div');
-          empty.className = 'apps-empty';
-          empty.textContent =
-            'No links yet. Add one for anything this machine — or your network — already serves.';
-          list.appendChild(empty);
-        }
-        for (const l of links) list.appendChild(row(l));
-        $('state').textContent = '';
+      function page(which) {
+        $('grid').hidden = which !== 'grid';
+        $('detail').hidden = which !== 'detail';
+        btn('back').hidden = which !== 'detail';
+        btn('refresh').hidden = which !== 'grid';
       }
+
+      function goDetail(link) {
+        detailId = link.id;
+        paintDetail(link);
+        page('detail');
+        btn('back').focus();
+      }
+
+      function goGrid() {
+        detailId = null;
+        page('grid');
+      }
+
+      /* ---------------------------------------------------------- actions */
 
       async function refresh() {
         await loadLinks();
-        if (live) render();
+        if (!live) return;
+        render();
+        if (!detailId) return;
+        // A link that has gone takes its page with it rather than leaving a
+        // stale one up: back to the grid, which is where it is no longer.
+        const still = links.find((l) => l.id === detailId);
+        if (still) paintDetail(still); else goGrid();
       }
 
       async function add() {
@@ -3444,8 +3629,17 @@ function openLinks() {
         await refresh();
       }
 
-      onTap(root.querySelector('[data-a="add"]'), add);
-      onTap(root.querySelector('[data-a="refresh"]'), refresh);
+      onTap(btn('back'), goGrid);
+      onTap(btn('refresh'), refresh);
+      // Escape is what a second page owes anybody who opened it. It is bound on
+      // this window rather than on the document, so it cannot reach past the
+      // grid into whatever is behind this one.
+      root.addEventListener('keydown', (e) => {
+        if (e.key !== 'Escape' || !detailId) return;
+        e.preventDefault();
+        e.stopPropagation();
+        goGrid();
+      });
       entry.onClose = () => { live = false; };
       refresh();
     },
@@ -3501,11 +3695,17 @@ document.getElementById('login-form').addEventListener('submit', async (e) => {
   }
 });
 
+/* Every way in, in one table. The dock buttons read it, the Apps grid reads it,
+   and the account menu reads it, so the three cannot come to disagree about
+   what opening the same app means. */
 const APPS = {
   files: () => openFiles(STATE.home),
   terminal: () => openTerminal(),
-  // One Links window is enough; a second would only disagree with the first.
-  links: () => openSingleton('links', openLinks),
+  // One Apps window is enough; a second would only disagree with the first.
+  apps: () => openSingleton('apps', openApps),
+  // System has no dock button -- it is reached from the account menu and from
+  // the grid -- but it is an app, and this is where an app is opened.
+  system: () => openSingleton('system', openSystem),
 };
 
 document.querySelectorAll('.dock-btn[data-app]').forEach((b) => {
@@ -3624,7 +3824,7 @@ onTap(menuEl(), (e) => {
   const row = e.target.closest('.menu-row');
   if (!row) return;
   closeMenu();
-  if (row.dataset.a === 'system') openSingleton('system', openSystem);
+  if (row.dataset.a === 'system') APPS.system();
   else if (row.dataset.a === 'logout') signOut();
 });
 

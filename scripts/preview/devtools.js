@@ -62,7 +62,7 @@ function applyScene() {
     else if (app === 'terminal') opened.push(openTerminal());
     else if (app === 'editor') opened.push(openEditor('/home/hutson/README.md', 'i-readme'));
     else if (app === 'system') opened.push(openSingleton('system', openSystem));
-    else if (app === 'links') opened.push(openSingleton('links', openLinks));
+    else if (app === 'apps' || app === 'links') opened.push(openSingleton('apps', openApps));
   }
 
   /* A window that has given its title bar back to what is inside it. Set on the
@@ -71,6 +71,17 @@ function applyScene() {
      top edge of the window to bring the bar back. */
   if (PREVIEW.scene.autohide) {
     for (const e of opened) if (e && e.setAutohide) e.setAutohide(true);
+  }
+
+  /* The Apps window's second page, reached the way a person reaches it: the
+     corner button on the first link's tile. Driven rather than called, because
+     the page belongs to the window and nothing outside it should know how to
+     put it up. */
+  if (PREVIEW.scene.page === 'detail') {
+    setTimeout(() => {
+      const more = document.querySelector('.grid-more');
+      if (more) more.click();
+    }, 120);
   }
 
   // The in-page dialogs replaced prompt()/confirm(), so they are part of the
