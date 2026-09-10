@@ -63,6 +63,7 @@ function applyScene() {
     else if (app === 'editor') opened.push(openEditor('/home/hutson/README.md', 'i-readme'));
     else if (app === 'system') opened.push(openSingleton('system', openSystem));
     else if (app === 'apps' || app === 'links') opened.push(openSingleton('apps', openApps));
+    else if (app === 'settings') opened.push(openSingleton('settings', openSettings));
   }
 
   /* A window that has given its title bar back to what is inside it. Set on the
@@ -90,6 +91,11 @@ function applyScene() {
     setTimeout(() => askText('Rename', 'New name', 'notes.md', 'Rename'), 120);
   } else if (PREVIEW.scene.dialog === 'delete') {
     setTimeout(() => askConfirm('Delete notes.md?', 'This cannot be undone.', 'Delete'), 120);
+  } else if (PREVIEW.scene.dialog === 'term-settings') {
+    // The same call the gear in the terminal's title bar makes.
+    setTimeout(openTermSettings, 120);
+  } else if (PREVIEW.scene.dialog === 'files-settings') {
+    setTimeout(openFilesSettings, 120);
   }
 }
 

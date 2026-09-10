@@ -33,6 +33,13 @@ const SCENES = {
   'files-empty': { label: 'Files — empty folder', signedIn: true, open: ['files'], emptyDir: true },
   'dialog-rename': { label: 'Dialog — rename', signedIn: true, open: ['files'], dialog: 'rename' },
   'dialog-delete': { label: 'Dialog — delete', signedIn: true, open: ['files'], dialog: 'delete' },
+  settings: { label: 'Settings', signedIn: true, open: ['settings'] },
+  'dialog-term-settings': {
+    label: 'Dialog — terminal settings', signedIn: true, open: ['terminal'], dialog: 'term-settings',
+  },
+  'dialog-files-settings': {
+    label: 'Dialog — Files settings', signedIn: true, open: ['files'], dialog: 'files-settings',
+  },
   apps: { label: 'Apps', signedIn: true, open: ['apps'] },
   'apps-empty': { label: 'Apps — no links yet', signedIn: true, open: ['apps'], links: 'none' },
   'apps-guest': { label: 'Apps — not an admin', signedIn: true, open: ['apps'], admin: false },
