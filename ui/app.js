@@ -197,8 +197,16 @@ function onContext(el, fn) {
    desktop they are the one thing that gives it away. Everything this UI asks
    is asked in the page: a modal for a question, a toast for a complaint. */
 
-const reduceMotion = () =>
-  !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+/* The system's answer, unless this desk has been given one of its own. A
+   browser on a machine that has never been told about motion at all still
+   reports "no preference", which is why the override exists: the setting is
+   the one place someone can say it about this desk and nothing else. */
+const reduceMotion = () => {
+  const said = setting('desk').motion;
+  if (said === 'less') return true;
+  if (said === 'full') return false;
+  return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+};
 
 /* Resolves to the typed string, to true for a plain confirmation, or to null
    if it was dismissed. Text goes in with textContent throughout -- filenames
@@ -264,9 +272,14 @@ function openModal({
         let el;
         if (f.kind === 'choice') {
           el = document.createElement('select');
+          // An option is either a word that is both what is shown and what
+          // comes back, which is what a catalog entry offers, or a pair --
+          // which is what a setting needs, its stored value being a key and
+          // not a sentence.
           for (const opt of f.options || []) {
             const o = document.createElement('option');
-            o.value = o.textContent = opt;
+            o.value = typeof opt === 'string' ? opt : opt.value;
+            o.textContent = typeof opt === 'string' ? opt : opt.label;
             el.appendChild(o);
           }
           el.value = f.default || (f.options || [])[0] || '';
@@ -464,6 +477,161 @@ function setAutohidePref(app, on) {
   savePrefs();
 }
 
+/* ------------------------------------------------------------ settings ---*/
+
+/* What the desk can be told, and what it is when nobody has said. Three
+   groups: the desk itself, and one for each app that has anything worth
+   asking about.
+
+   Every value is a string. That is what the settings dialog hands back --
+   a <select> has no other kind of answer -- and one type throughout is one
+   fewer thing to be wrong about when a saved setting from an older build is
+   read by a newer one. A key this build does not know is dropped on the way
+   in; a key it knows and nobody has answered is the default. */
+const DEFAULTS = {
+  desk: {
+    accent: 'teal',
+    backdrop: 'aurora',
+    motion: 'system',
+    snap: 'true',
+    geometry: 'false',
+    startup: 'files',
+  },
+  files: {
+    hidden: 'false',
+    folders: 'true',
+    sort: 'name',
+    single: 'false',
+    edit: '2097152',
+  },
+  term: {
+    size: '13',
+    spacing: '1',
+    cursor: 'block',
+    blink: 'true',
+    scrollback: '1000',
+    theme: 'desk',
+    copy: 'false',
+  },
+};
+
+/* Read a whole group at once rather than a key at a time: nothing here is
+   expensive, and a caller that has the group in hand cannot forget that a
+   setting it did not ask for still has a value. */
+const setting = (group) => ({ ...DEFAULTS[group], ...(prefs[group] || null) });
+
+function saveSetting(group, values) {
+  const keep = {};
+  for (const key of Object.keys(DEFAULTS[group])) {
+    if (values[key] !== undefined) keep[key] = String(values[key]);
+  }
+  prefs[group] = keep;
+  savePrefs();
+}
+
+/* The colours the desk will wear. Each is a pair, because every accent needs
+   ink dark enough to be read on top of it -- the accent is a background as
+   often as it is a foreground, on the confirm button and the highlighted row
+   of a menu. Danger's rose is not among them: two things that mean different
+   things must not be able to end up the same colour. */
+const ACCENTS = {
+  teal: { name: 'Teal', hex: '#3fb6c8', ink: '#062229' },
+  blue: { name: 'Blue', hex: '#7aa2f7', ink: '#08122a' },
+  green: { name: 'Green', hex: '#8fd694', ink: '#082210' },
+  mauve: { name: 'Mauve', hex: '#c3a6f0', ink: '#1a0e2b' },
+  peach: { name: 'Peach', hex: '#f0a06a', ink: '#2a1206' },
+};
+
+const BACKDROPS = { aurora: 'Aurora', dusk: 'Dusk', plain: 'Plain' };
+
+const MOTIONS = { system: 'Follow the system', full: 'Full', less: 'Reduced' };
+
+const STARTUPS = { files: 'Files', terminal: 'Terminal', apps: 'Apps', none: 'Nothing' };
+
+/* Two variables and a class on the body, which is the whole of it: the dock,
+   the focus ring, the buttons and the terminal's cursor all read --accent
+   rather than a colour of their own, so this is the only place a colour is
+   named at runtime. */
+function applyDesk() {
+  const d = setting('desk');
+  const a = ACCENTS[d.accent] || ACCENTS.teal;
+  document.documentElement.style.setProperty('--accent', a.hex);
+  document.documentElement.style.setProperty('--accent-ink', a.ink);
+  for (const key of Object.keys(BACKDROPS)) {
+    document.body.classList.toggle('desk--' + key, key === d.backdrop);
+  }
+}
+
+/* Everything that is already open, told that a setting changed. Windows that
+   have nothing to say to that simply do not have the hook. */
+function applyToWindows() {
+  for (const e of openWindows.values()) {
+    if (e.applySettings) { try { e.applySettings(); } catch (_) {} }
+  }
+}
+
+/* Where an app's windows were left, if that is what was asked for. Kept per
+   app rather than per window: a second terminal opening exactly on top of the
+   first is not "where I left it", it is a window nobody can see is two. */
+const savedGeom = (app) =>
+  (app && setting('desk').geometry === 'true' && prefs.geom && prefs.geom[app]) || null;
+
+function rememberGeom(entry) {
+  if (!entry.app || entry.snapped || entry.win.hidden) return;
+  if (setting('desk').geometry !== 'true') return;
+  const w = entry.win;
+  if (!prefs.geom) prefs.geom = {};
+  prefs.geom[entry.app] = {
+    x: Math.round(w.offsetLeft),
+    y: Math.round(w.offsetTop),
+    w: Math.round(w.offsetWidth),
+    h: Math.round(w.offsetHeight),
+  };
+  savePrefs();
+}
+
+/* An app's own settings, asked for in a modal rather than in a window: it is
+   a short list, it is about the window you are already looking at, and a
+   window of its own would be one more thing to close. openModal does the
+   escape key, the backdrop, the focus trap and the styling, so this is only
+   the questions and what to do with the answers. */
+async function appSettings(group, title, fields, note) {
+  const now = setting(group);
+  const asked = await openModal({
+    title,
+    // A value saved by a build that offered it and this one does not is not on
+    // the menu, and a <select> asked for an option it has not got shows blank
+    // and answers blank. The default is what it falls back to instead.
+    fields: fields.map((f) => {
+      const held = now[f.key];
+      const known = f.kind !== 'choice' ||
+        (f.options || []).some((o) => (typeof o === 'string' ? o : o.value) === held);
+      return { ...f, default: known ? held : DEFAULTS[group][f.key] };
+    }),
+    note,
+    confirmLabel: 'Save',
+  });
+  if (!asked) return;
+  saveSetting(group, asked);
+  applyToWindows();
+}
+
+/* The one control an app is allowed in its own title bar. It goes in the
+   window's tools slot, next to the name and clear of the three controls on
+   the right, so Files and Terminal ask for their settings in the same place
+   and neither has to grow a toolbar to hold one button. */
+function settingsBtn(entry, open) {
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.className = 'win-btn win-btn--icon tip';
+  b.dataset.tip = 'Settings';
+  b.setAttribute('aria-label', 'Settings');
+  b.innerHTML = '<svg class="ic-a" aria-hidden="true"><use href="#a-settings"></use></svg>';
+  onTap(b, open);
+  entry.tools.appendChild(b);
+  return b;
+}
+
 /* The band at the bottom the dock sits in. The windows layer runs the whole
    height of the screen so that a window can slide under the frosted dock and
    be seen through it; what keeps that from being a nuisance is here, not in
@@ -508,6 +676,10 @@ function zoneRect(key, layer) {
 const zoneFor = (key, layer) => ({ key, rect: zoneRect(key, layer) });
 
 function zoneAt(cx, cy, layer) {
+  // Turned off, the edges are only edges again. The regions themselves stay:
+  // the layout menu still offers all seven, because asking for a half is not
+  // the thing anyone wanted rid of -- being given one mid-drag is.
+  if (setting('desk').snap !== 'true') return null;
   const r = layer.getBoundingClientRect();
   const x = cx - r.left, y = cy - r.top;
   const w = layer.clientWidth, h = layer.clientHeight - dockBand();
@@ -918,10 +1090,22 @@ function createWindow({ title, width = 720, height = 460, app = '', icon = '', t
   const win = document.createElement('div');
   win.className = 'win';
   const offset = (openWindows.size % 6) * 26;
-  win.style.width = Math.max(320, Math.min(width, layer.clientWidth - 40)) + 'px';
-  win.style.height = Math.max(200, Math.min(height, free - 40)) + 'px';
-  win.style.left = Math.max(12, (layer.clientWidth - width) / 2 + offset) + 'px';
-  win.style.top = Math.max(12, (free - height) / 2 - 20 + offset) + 'px';
+  /* A window opens in the middle, stepped along a little for each one already
+     up -- or where its app was last left, if the desk has been asked to
+     remember. Either way it is clamped here rather than trusted: the shape was
+     written down on whatever screen was in front of somebody last time, and a
+     window that opens off the bottom of a smaller one cannot be dragged back. */
+  const was = savedGeom(app);
+  const w = Math.max(320, Math.min(was ? was.w : width, layer.clientWidth - 40));
+  const h = Math.max(200, Math.min(was ? was.h : height, free - 40));
+  win.style.width = w + 'px';
+  win.style.height = h + 'px';
+  win.style.left = (was
+    ? Math.min(Math.max(12, was.x), Math.max(12, layer.clientWidth - w - 12))
+    : Math.max(12, (layer.clientWidth - width) / 2 + offset)) + 'px';
+  win.style.top = (was
+    ? Math.min(Math.max(12, was.y), Math.max(12, free - h - 12))
+    : Math.max(12, (free - height) / 2 - 20 + offset)) + 'px';
 
   const bar = document.createElement('div');
   bar.className = 'win-bar';
@@ -1208,6 +1392,12 @@ function createWindow({ title, width = 720, height = 460, app = '', icon = '', t
                           ev.clientY >= r.top && ev.clientY <= r.bottom;
       }
       entry.holdBar(false);
+      // Written down where the gesture ends rather than as it goes, so a drag
+      // costs one write. A window let go into a region is not written down at
+      // all -- rememberGeom skips a snapped window -- because a half of the
+      // screen is a shape the desk chose, and the loose one behind it is still
+      // the last shape anybody actually put the window in.
+      rememberGeom(entry);
       bar.removeEventListener('pointermove', move);
       bar.removeEventListener('pointerup', up);
       bar.removeEventListener('pointercancel', up);
@@ -1237,6 +1427,7 @@ function createWindow({ title, width = 720, height = 460, app = '', icon = '', t
       grip.removeEventListener('pointerup', up);
       grip.removeEventListener('pointercancel', up);
       if (entry.onResize) entry.onResize();
+      rememberGeom(entry);
     };
     grip.addEventListener('pointermove', move);
     grip.addEventListener('pointerup', up);
@@ -1332,12 +1523,12 @@ function raiseWindow(e) {
 const appWindows = (app) => [...openWindows.values()].filter((e) => e.app === app);
 
 /* The dock item a window belongs to: its app's icon, its own item if it is an
-   editor, or the account button for the System window. */
+   editor, or the account button for the two windows the account menu opens. */
 function anchorEl(e) {
   return (
     document.querySelector(`.dock-btn[data-win="${e.id}"]`) ||
     document.querySelector(`.dock-btn[data-app="${e.app}"]`) ||
-    (e.app === 'system' ? document.getElementById('whoami') : null) ||
+    (e.app === 'system' || e.app === 'settings' ? document.getElementById('whoami') : null) ||
     document.querySelector('.dock')
   );
 }
@@ -1428,7 +1619,9 @@ function paintDock() {
     btn.classList.toggle('on', appWindows(btn.dataset.app).length > 0);
   }
   const who = document.getElementById('whoami');
-  if (who) who.classList.toggle('on', appWindows('system').length > 0);
+  if (who) {
+    who.classList.toggle('on', appWindows('system').length + appWindows('settings').length > 0);
+  }
 }
 
 /* A dock click raises what the app already has -- the minimised window first,
@@ -1781,6 +1974,41 @@ const barBtn = (a, label, cls = '') =>
   `<button type="button" class="fbtn fbtn--icon tip${cls ? ' ' + cls : ''}" data-a="${a}" data-tip="${label}" aria-label="${label}">` +
   `<svg class="ic-a" aria-hidden="true"><use href="#a-${a}"></use></svg></button>`;
 
+/* What Files can be told. The dotfile switch in the toolbar is still the way
+   to see them in one folder for one minute; this is what a window starts as. */
+const FILES_FIELDS = [
+  {
+    key: 'hidden', kind: 'toggle', label: 'Show dotfiles',
+    help: 'What a window starts out showing. The toolbar switch still turns them on and off from one folder to the next.',
+  },
+  { key: 'folders', kind: 'toggle', label: 'Folders before files' },
+  {
+    key: 'sort', kind: 'choice', label: 'Sort by',
+    options: [
+      { value: 'name', label: 'Name' },
+      { value: 'size', label: 'Largest first' },
+      { value: 'mtime', label: 'Newest first' },
+    ],
+  },
+  {
+    key: 'single', kind: 'toggle', label: 'One click opens',
+    help: 'For a mouse. A finger already opens what it taps a second time, whichever way this is set.',
+  },
+  {
+    key: 'edit', kind: 'choice', label: 'Edit text files up to',
+    options: [
+      { value: '262144', label: '256 KB' },
+      { value: '2097152', label: '2 MB' },
+      { value: '8388608', label: '8 MB' },
+    ],
+    help: 'A text file larger than this downloads instead of opening in the editor, which holds the whole of it in the page.',
+  },
+];
+
+const openFilesSettings = () =>
+  appSettings('files', 'Files settings', FILES_FIELDS,
+    'Kept in this browser, and used by every Files window.');
+
 function openFiles(startPath) {
   return createWindow({
     title: 'Files',
@@ -1819,8 +2047,9 @@ function openFiles(startPath) {
       let parent = null;
       let selected = null;
       let entries = [];
-      // Dotfiles are noise in most folders, so the folder opens without them.
-      let showHidden = false;
+      // Dotfiles are noise in most folders, so unless the settings say
+      // otherwise the folder opens without them.
+      let showHidden = setting('files').hidden === 'true';
       // What last touched a row, so a tap and a click can mean different
       // things on the machines that have both.
       let pointer = 'mouse';
@@ -1843,14 +2072,29 @@ function openFiles(startPath) {
 
       const isHidden = (it) => (it.name || '').startsWith('.');
 
+      /* The server sends folders first and then names, which is the order most
+         people want and the only one it can produce without being asked. The
+         other two are arithmetic on numbers already in the listing, so they are
+         done here rather than in another round trip. */
+      function ordered(rows) {
+        const s = setting('files');
+        const dirsFirst = s.folders === 'true';
+        return [...rows].sort((a, b) => {
+          if (dirsFirst && (a.kind === 'dir') !== (b.kind === 'dir')) return a.kind === 'dir' ? -1 : 1;
+          if (s.sort === 'size') return (b.size || 0) - (a.size || 0);
+          if (s.sort === 'mtime') return (b.mtime || 0) - (a.mtime || 0);
+          return (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' });
+        });
+      }
+
       function render() {
         const list = $('list');
         list.textContent = '';
         // Shown, the dotfiles are grouped above everything else rather than
-        // scattered through it -- the server's order is kept within each group.
+        // scattered through it -- each group is sorted the same way within.
         const items = showHidden
-          ? [...entries.filter(isHidden), ...entries.filter((it) => !isHidden(it))]
-          : entries.filter((it) => !isHidden(it));
+          ? [...ordered(entries.filter(isHidden)), ...ordered(entries.filter((it) => !isHidden(it)))]
+          : ordered(entries.filter((it) => !isHidden(it)));
         // Rename and Delete act on the selection, so it may not outlive the
         // row: hiding the dotfiles drops one that has just gone off screen.
         if (selected && !items.includes(selected)) selected = null;
@@ -1866,8 +2110,9 @@ function openFiles(startPath) {
           if (it === selected) row.classList.add('sel');
           const open = () => {
             const full = join(cwd, it.name);
+            const limit = Number(setting('files').edit) || 2 * 1024 * 1024;
             if (it.kind === 'dir') load(full);
-            else if (TEXT_EXT.test(it.name) && it.size < 2 * 1024 * 1024) openEditor(full, iconIdFor(it));
+            else if (TEXT_EXT.test(it.name) && it.size < limit) openEditor(full, iconIdFor(it));
             else download(full, it.name);
           };
           const select = () => {
@@ -1884,7 +2129,11 @@ function openFiles(startPath) {
             // already selected opens it, however long since the tap that
             // selected it -- which still leaves one tap to pick something for
             // the Rename and Delete buttons to act on.
-            if (was && pointer !== 'mouse') open();
+            if (was && pointer !== 'mouse') return open();
+            // Asked for, a mouse gets the same bargain the finger has: the row
+            // is selected first and then opened, so the toolbar still has
+            // something to rename even though the click did not stop there.
+            if (pointer === 'mouse' && setting('files').single === 'true') open();
           });
           row.addEventListener('dblclick', () => { if (pointer === 'mouse') open(); });
           // Rename and Delete were only ever reachable as toolbar buttons
@@ -2186,6 +2435,20 @@ function openFiles(startPath) {
       }
       markHide();
 
+      settingsBtn(entry, openFilesSettings);
+
+      /* The settings changed, here or in another Files window. The order is
+         the whole list back on its feet: what it shows, the button that says
+         so, and then the rows. A window whose toolbar switch disagrees with
+         the new default loses the argument -- somebody has just answered that
+         question directly, and the two saying different things is worse than
+         either answer. */
+      entry.applySettings = () => {
+        showHidden = setting('files').hidden === 'true';
+        markHide();
+        render();
+      };
+
       load(startPath);
     },
   });
@@ -2250,6 +2513,74 @@ function openEditor(path, icon) {
 
 /* ------------------------------------------------------------- terminal ---*/
 
+/* What the terminal can be told. Every one of these is an xterm option, set on
+   a live terminal rather than on the next one: a font size you cannot see the
+   effect of until you open another window is a font size chosen blind. */
+const TERM_FIELDS = [
+  {
+    key: 'size', kind: 'choice', label: 'Font size',
+    options: ['11', '12', '13', '14', '15', '16', '18', '20'].map((v) => ({ value: v, label: v + ' px' })),
+  },
+  {
+    key: 'spacing', kind: 'choice', label: 'Line spacing',
+    options: [
+      { value: '1', label: 'Tight' },
+      { value: '1.15', label: 'Normal' },
+      { value: '1.35', label: 'Loose' },
+    ],
+  },
+  {
+    key: 'cursor', kind: 'choice', label: 'Cursor',
+    options: [
+      { value: 'block', label: 'Block' },
+      { value: 'bar', label: 'Bar' },
+      { value: 'underline', label: 'Underline' },
+    ],
+  },
+  { key: 'blink', kind: 'toggle', label: 'Cursor blinks' },
+  {
+    key: 'scrollback', kind: 'choice', label: 'Scrollback',
+    options: [
+      { value: '1000', label: '1,000 lines' },
+      { value: '5000', label: '5,000 lines' },
+      { value: '25000', label: '25,000 lines' },
+    ],
+    help: 'Held in the page. A long scrollback in several windows is real memory in this browser.',
+  },
+  {
+    key: 'theme', kind: 'choice', label: 'Colours',
+    options: [
+      { value: 'desk', label: 'Desk' },
+      { value: 'black', label: 'Black' },
+      { value: 'light', label: 'Light' },
+    ],
+  },
+  {
+    key: 'copy', kind: 'toggle', label: 'Copy on select',
+    help: 'Needs a page the browser trusts with the clipboard — https, or localhost. Elsewhere it quietly does nothing.',
+  },
+];
+
+const openTermSettings = () =>
+  appSettings('term', 'Terminal settings', TERM_FIELDS,
+    'Kept in this browser, and used by every terminal window. None of it reaches the shell.');
+
+/* The three the terminal can wear. Desk takes its cursor from the accent, so
+   the caret changes colour with the rest of the desk; the other two are what
+   somebody asks for when the desk's own dark is not the dark they wanted. */
+function termTheme(name) {
+  const accent =
+    getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#3fb6c8';
+  if (name === 'black') return { background: '#000000', foreground: '#e6eaf0', cursor: accent };
+  if (name === 'light') {
+    return {
+      background: '#f6f7f9', foreground: '#1b212b', cursor: '#1b212b',
+      selectionBackground: '#ccd4de',
+    };
+  }
+  return { background: '#0d1117', foreground: '#e6eaf0', cursor: accent };
+}
+
 function openTerminal() {
   return createWindow({
     title: 'Terminal',
@@ -2261,16 +2592,53 @@ function openTerminal() {
       host.className = 'term';
       entry.body.appendChild(host);
 
+      const look = setting('term');
       const term = new Terminal({
         fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
-        fontSize: 13,
-        cursorBlink: true,
-        theme: { background: '#0d1117', foreground: '#e6eaf0', cursor: '#3fb6c8' },
+        fontSize: Number(look.size) || 13,
+        lineHeight: Number(look.spacing) || 1,
+        cursorStyle: look.cursor,
+        cursorBlink: look.blink === 'true',
+        scrollback: Number(look.scrollback) || 1000,
+        theme: termTheme(look.theme),
       });
       const fit = new FitAddon.FitAddon();
       term.loadAddon(fit);
       term.open(host);
+      host.style.background = termTheme(look.theme).background;
       setTimeout(() => fit.fit(), 0);
+
+      settingsBtn(entry, openTermSettings);
+
+      /* A live terminal, re-dressed. The size and the spacing change how many
+         rows and columns fit, so the far end is told before it is asked to
+         draw anything at the new shape -- fit() first, and sendSize is what
+         the resize handler below would have called anyway. The padding around
+         the canvas is the window's, not xterm's, so it is painted here too. */
+      entry.applySettings = () => {
+        const s = setting('term');
+        const theme = termTheme(s.theme);
+        term.options.fontSize = Number(s.size) || 13;
+        term.options.lineHeight = Number(s.spacing) || 1;
+        term.options.cursorStyle = s.cursor;
+        term.options.cursorBlink = s.blink === 'true';
+        term.options.scrollback = Number(s.scrollback) || 1000;
+        term.options.theme = theme;
+        host.style.background = theme.background;
+        try { fit.fit(); } catch (_) {}
+      };
+
+      /* Copy on select: what a middle click would paste in an X terminal,
+         minus the middle click, because a page is not allowed anywhere near
+         the primary selection. A browser that will not hand over the clipboard
+         at all -- an http page that is not localhost -- simply does nothing,
+         which is why the setting says so. */
+      term.onSelectionChange(() => {
+        if (setting('term').copy !== 'true') return;
+        const text = term.getSelection();
+        if (!text || !navigator.clipboard) return;
+        navigator.clipboard.writeText(text).catch(() => {});
+      });
 
       const enc = new TextEncoder();
       const say = (text, sgr) => term.write(`\r\n\x1b[${sgr}m${text}\x1b[0m\r\n`);
@@ -2406,6 +2774,211 @@ function openSingleton(key, open) {
   const entry = open();
   singletons.set(key, entry);
   return entry;
+}
+
+/* ------------------------------------------------------- settings window ---*/
+
+/* The desk's own settings: the things that are true of the whole screen rather
+   than of one app. The two apps that have settings of their own are in here as
+   well, as a row each that opens the same dialog their title bars do -- not a
+   copy of it, the same call -- so "where do I change that" has one answer even
+   though the change itself happens where the app is.
+
+   Nothing here has a Save button. Every setting is one control and takes
+   effect on the spot, which is what makes trying one on cheap: an accent you
+   do not like is one more click away from the accent you did. The app dialogs
+   do have one, because a modal that applied a half-filled form as it was typed
+   would be a modal you could not back out of. */
+
+function openSettings() {
+  return createWindow({
+    title: 'Settings',
+    app: 'settings',
+    titleIcon: 'a-settings',
+    width: 600,
+    height: 560,
+    build(entry) {
+      const root = document.createElement('div');
+      root.className = 'sys';
+      root.innerHTML = `
+        <div class="sys-bar">
+          <button class="fbtn danger" data-a="reset">Reset everything</button>
+          <span class="sys-state" data-el="state">Kept in this browser, not on the host</span>
+        </div>
+        <div class="sys-scroll" data-el="body"></div>`;
+      entry.body.appendChild(root);
+
+      const body = root.querySelector('[data-el="body"]');
+
+      /* Anything changed here may have changed a colour every window is
+         drawing with, so both are done every time rather than each control
+         having to know which; neither costs anything worth counting. The flag
+         is what keeps this window out of its own repaint -- rebuilding these
+         rows mid-change would take away the control still under the pointer. */
+      let mine = false;
+      const settled = () => {
+        applyDesk();
+        mine = true;
+        try { applyToWindows(); } finally { mine = false; }
+      };
+
+      const change = (group, key, value) => {
+        saveSetting(group, { ...setting(group), [key]: value });
+        settled();
+      };
+
+      function head(text) {
+        const h = document.createElement('h3');
+        h.className = 'set-head';
+        h.textContent = text;
+        return h;
+      }
+
+      /* A row is a name, a sentence under it if the name is not enough, and
+         one control on the right. The label wraps the control so the name is
+         part of the hit area -- except for the accent and the two rows that
+         open a dialog, whose controls are buttons and cannot live inside a
+         label at all. */
+      function row(name, sub, control) {
+        const el = document.createElement(control.tagName === 'DIV' ? 'div' : 'label');
+        el.className = 'set-row';
+        const text = document.createElement('span');
+        text.className = 'set-text';
+        const n = document.createElement('span');
+        n.className = 'set-name';
+        n.textContent = name;
+        text.appendChild(n);
+        if (sub) {
+          const s = document.createElement('span');
+          s.className = 'set-sub';
+          s.textContent = sub;
+          text.appendChild(s);
+        }
+        el.append(text, control);
+        return el;
+      }
+
+      function choice(group, key, options) {
+        const sel = document.createElement('select');
+        sel.className = 'set-input';
+        for (const [value, label] of Object.entries(options)) {
+          const o = document.createElement('option');
+          o.value = value;
+          o.textContent = label;
+          sel.appendChild(o);
+        }
+        // Same fallback the app dialogs make: an answer this build no longer
+        // offers is not left as a blank row saying nothing.
+        sel.value = setting(group)[key];
+        if (!sel.value) sel.value = DEFAULTS[group][key];
+        sel.addEventListener('change', () => change(group, key, sel.value));
+        return sel;
+      }
+
+      function toggle(group, key) {
+        const box = document.createElement('input');
+        box.type = 'checkbox';
+        box.className = 'set-check';
+        box.checked = setting(group)[key] === 'true';
+        box.addEventListener('change', () => change(group, key, String(box.checked)));
+        return box;
+      }
+
+      /* The accent, as the colours themselves. A menu of five colour names is
+         a menu you have to try one at a time to read. */
+      function swatches() {
+        const wrap = document.createElement('div');
+        wrap.className = 'swatches';
+        const now = setting('desk').accent;
+        for (const [key, a] of Object.entries(ACCENTS)) {
+          const b = document.createElement('button');
+          b.type = 'button';
+          b.className = 'swatch tip';
+          b.style.background = a.hex;
+          b.dataset.tip = a.name;
+          b.setAttribute('aria-label', a.name);
+          b.setAttribute('aria-pressed', String(key === now));
+          onTap(b, () => {
+            change('desk', 'accent', key);
+            for (const other of wrap.children) other.setAttribute('aria-pressed', String(other === b));
+          });
+          wrap.appendChild(b);
+        }
+        return wrap;
+      }
+
+      function opener(label, run) {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'fbtn';
+        b.textContent = label;
+        onTap(b, run);
+        const wrap = document.createElement('div');
+        wrap.className = 'set-control';
+        wrap.appendChild(b);
+        return wrap;
+      }
+
+      function paint() {
+        body.textContent = '';
+
+        body.append(
+          head('Appearance'),
+          row('Accent', 'The colour of a focused edge, a chosen row and the terminal caret.', swatches()),
+          row('Desktop', '', choice('desk', 'backdrop', BACKDROPS)),
+          row('Motion', 'Windows fly out of the dock and menus rise. Reduced puts everything in place at once.',
+            choice('desk', 'motion', MOTIONS)),
+
+          head('Windows'),
+          row('Snap to the edges', 'Dragging a title bar to an edge offers a half or a quarter of the screen. The layout button offers the same regions either way.',
+            toggle('desk', 'snap')),
+          row('Remember size and position', 'Each app opens where you last left it, one shape per app.',
+            toggle('desk', 'geometry')),
+
+          head('Signing in'),
+          row('Open on arrival', '', choice('desk', 'startup', STARTUPS)),
+
+          head('Apps'),
+          row('Terminal', 'Font, cursor, scrollback and colours.', opener('Terminal settings…', openTermSettings)),
+          row('Files', 'Dotfiles, sorting and what a click does.', opener('Files settings…', openFilesSettings)),
+        );
+
+        const note = document.createElement('div');
+        note.className = 'sys-note';
+        note.textContent =
+          'None of this is about the machine. It is kept in this browser, so another browser — ' +
+          'and anybody else signing in here — gets its own answers, and a host that has never ' +
+          'heard of any of it stays a host that has never heard of any of it.';
+        body.appendChild(note);
+      }
+
+      onTap(root.querySelector('[data-a="reset"]'), async () => {
+        const ok = await askConfirm(
+          'Reset every setting?',
+          'The desk, Files and the terminal all go back to how they arrived, and the ' +
+          'windows this browser remembers are forgotten. Nothing on the host changes.',
+          'Reset',
+        );
+        if (!ok) return;
+        for (const key of ['desk', 'files', 'term', 'geom', 'autohide']) delete prefs[key];
+        savePrefs();
+        // The windows already open are holding the old answer in a variable,
+        // not in the settings, so the one that is visible from here is put
+        // back by hand rather than left disagreeing with what was just reset.
+        for (const e of openWindows.values()) if (e.autohide) e.setAutohide(false);
+        settled();
+        paint();
+        toast('Settings reset.');
+      });
+
+      entry.onClose = () => singletons.delete('settings');
+      // Another window's dialog may have answered the same question; the
+      // controls here are redrawn rather than left saying the old answer.
+      entry.applySettings = () => { if (!mine) paint(); };
+
+      paint();
+    },
+  });
 }
 
 /* --------------------------------------------------------------- system ---*/
@@ -3410,6 +3983,7 @@ const APPS_EMPTY =
 const shellApps = () => [
   { name: 'Files', icon: 'a-files', run: (alt) => activateApp('files', APPS.files, alt) },
   { name: 'Terminal', icon: 'a-terminal', run: (alt) => activateApp('terminal', APPS.terminal, alt) },
+  { name: 'Settings', icon: 'a-settings', run: () => APPS.settings() },
   { name: 'System', icon: 'a-user', run: () => APPS.system() },
 ];
 
@@ -3770,7 +4344,7 @@ document.getElementById('login-form').addEventListener('submit', async (e) => {
     document.getElementById('p').value = '';
     await loadIcons();
     showDesktop();
-    openFiles(STATE.home);
+    openStartup();
     loadLinks();
   } catch (ex) {
     err.textContent = ex.message;
@@ -3787,10 +4361,21 @@ const APPS = {
   terminal: () => openTerminal(),
   // One Apps window is enough; a second would only disagree with the first.
   apps: () => openSingleton('apps', openApps),
-  // System has no dock button -- it is reached from the account menu and from
-  // the grid -- but it is an app, and this is where an app is opened.
+  // Neither of these has a dock button -- both are reached from the account
+  // menu and from the grid -- but they are apps, and this is where an app is
+  // opened. One of each is plenty: two Settings windows could only disagree.
+  settings: () => openSingleton('settings', openSettings),
   system: () => openSingleton('system', openSystem),
 };
+
+/* What is waiting when you sign in. Files, because a desk with nothing on it
+   is a desk that looks broken -- but that is a default and not a law, and one
+   of the four answers is that nothing should open at all. */
+function openStartup() {
+  const want = setting('desk').startup;
+  if (want === 'none') return;
+  (APPS[want] || APPS.files)();
+}
 
 document.querySelectorAll('.dock-btn[data-app]').forEach((b) => {
   const app = b.dataset.app;
@@ -3921,6 +4506,7 @@ onTap(menuEl(), (e) => {
   if (!row) return;
   closeMenu();
   if (row.dataset.a === 'system') APPS.system();
+  else if (row.dataset.a === 'settings') APPS.settings();
   else if (row.dataset.a === 'logout') signOut();
 });
 
@@ -3939,6 +4525,11 @@ async function signOut() {
   showLogin('Signed out.');
 }
 
+// Before anything is drawn, and before the sign-in card: the accent is on that
+// too, and a desk that changed colour a second after it appeared would look
+// like a desk that had loaded twice.
+applyDesk();
+
 (async function boot() {
   try {
     const me = await api('/api/me');
@@ -3947,7 +4538,7 @@ async function signOut() {
     STATE.admin = !!me.admin;
     await loadIcons();
     showDesktop();
-    openFiles(STATE.home);
+    openStartup();
     // Not awaited: the dock fills in as soon as the host answers, and a desk
     // with no links simply never adds anything.
     loadLinks();

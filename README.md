@@ -274,12 +274,23 @@ one. Deleting it costs nothing but a cold build next update.
   own, opening in a window like everything else — or in a browser tab, for the
   many sites that refuse to be framed. Nothing is installed and nothing runs on
   the host. See [Apps](#apps).
-- **Apps** — one grid of everything this desk can open: Files, Terminal, System
-  and every link, drawn as the tiles the dock draws, in the order the dock draws
-  them. Behind each link's tile is a page of its own. See [Apps](#apps).
+- **Apps** — one grid of everything this desk can open: Files, Terminal,
+  Settings, System and every link, drawn as the tiles the dock draws, in the
+  order the dock draws them. Behind each link's tile is a page of its own. See
+  [Apps](#apps).
+- **Settings** — what this desk is like, in one window: accent colour, backdrop,
+  motion, whether dragging to an edge snaps, whether an app reopens at the size
+  and place you left it, and what opens when you sign in. Nothing has a Save
+  button; a setting is one control and takes effect as it is changed. Files and
+  the terminal have settings of their own — dotfiles, sorting and what a click
+  does; font, cursor, scrollback, colours and copy-on-select — asked for in a
+  modal from the gear in that app's own title bar, and reachable from a row in
+  this window as well. All of it lives in this browser's storage: another
+  browser gets its own answers and the host is never told any of it. See
+  [Settings](#settings).
 - **Account** — one button in the upper left, carrying no text: the username is
-  its tooltip. It drops a two-row menu — the username again, which opens
-  System, and Sign out.
+  its tooltip. It drops a three-row menu — the username again, which opens
+  System, Settings, and Sign out.
 - **No browser dialogs** — nothing calls `prompt()`, `confirm()` or `alert()`.
   Questions are asked in an in-page modal, complaints arrive as a toast above
   the dock, and a file the editor will not take is downloaded rather than
@@ -411,6 +422,44 @@ The frame is sandboxed, unlike the container frame that preceded it, and
 `allow-top-navigation` is the flag it deliberately lacks: without a sandbox a
 framed page can navigate the whole desk elsewhere, and this desk's login form
 takes a system password that hands back a root-capable shell.
+
+## Settings
+
+Two windows' worth of questions, in three places, because they are three
+different kinds of question.
+
+**The desk**, in the Settings window — reached from the account menu or the Apps
+grid, like System:
+
+| | |
+| --- | --- |
+| **Accent** | five colours, shown as the colours themselves. Everything reads `--accent`, so this is one variable and the focus rings, the chosen menu row, the confirm button and the terminal caret all follow |
+| **Desktop** | Aurora, Dusk or Plain — the same dark with different amounts of weather behind the windows |
+| **Motion** | follow the system, or say it here: windows flying out of the dock and menus rising, or everything in place at once |
+| **Snap to the edges** | whether dragging a title bar into an edge offers a half or a quarter. The layout button offers the same seven regions either way |
+| **Remember size and position** | one shape per app, written down when a drag or a resize ends and clamped to the screen on the way back — the shape may have been recorded on a larger one |
+| **Open on arrival** | Files, Terminal, Apps or nothing, when you sign in |
+
+**Each app**, in a modal from the gear in its own title bar — and from a row in
+the Settings window, which opens the same dialog rather than a copy of it:
+
+- **Files** — show dotfiles, folders before files, sort by name / largest /
+  newest, whether one click opens, and how large a text file may be before it
+  downloads instead of opening in the editor.
+- **Terminal** — font size, line spacing, cursor shape, whether it blinks,
+  scrollback, colours (Desk, Black, Light) and copy-on-select. Every one of
+  them is set on the terminals already open, not just the next one. Copy-on-
+  select needs a page the browser trusts with the clipboard — https, or
+  localhost — and quietly does nothing elsewhere.
+
+**Per window**, from the title bar itself: the auto-hiding bar switch, which is
+remembered per app.
+
+None of it reaches the host. It is `localStorage` under one key, so a second
+browser is entitled to its own answer, another person signing in here gets
+their own, and a host that has never heard of any of it stays that way. *Reset
+everything* in the Settings window puts all three groups, the remembered
+windows and the title-bar switches back to how they arrived.
 
 ## Icons
 
@@ -577,7 +626,7 @@ The bar in the corner has four controls:
 
 | | |
 | --- | --- |
-| **Scene** | jump to a state — sign-in, a failed sign-in, the file manager, the editor, the terminal, System with an update pending / running / failed, a non-admin session, a permission-denied listing, four windows at once, the rename and delete dialogs, Apps with links / with none / as a non-admin, a link's own page |
+| **Scene** | jump to a state — sign-in, a failed sign-in, the file manager, the editor, the terminal, System with an update pending / running / failed, a non-admin session, a permission-denied listing, four windows at once, the rename and delete dialogs, Settings, the terminal's and Files' own settings dialogs, Apps with links / with none / as a non-admin, a link's own page |
 | **Viewport** | render at phone, tablet or laptop size without resizing the window |
 | **Inspect** (⌥I) | click any pixel; the `ui/` file and line that style and build it are copied to the clipboard |
 | **↻** | reload — though saving anything under `ui/` already reloads the tab |

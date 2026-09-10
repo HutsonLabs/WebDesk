@@ -46,6 +46,18 @@ body{
     var(--bg);
   overflow:hidden;
 }
+/* The three backdrops the settings offer. Aurora is what the rule above
+   already draws, so it is named here and given nothing: a class with no
+   declarations is how the default says it is one of the three rather than the
+   absence of a choice. Nothing behind a window should compete with what is in
+   it, so all three are the same dark with different amounts of weather. */
+body.desk--aurora{}
+body.desk--dusk{
+  background:
+    radial-gradient(1200px 800px at 50% 120%, #2a2036 0%, transparent 62%),
+    linear-gradient(#0c1017, var(--bg));
+}
+body.desk--plain{background:var(--bg);}
 button{font:inherit;color:inherit;cursor:pointer;}
 [hidden]{display:none !important;}
 
@@ -655,6 +667,46 @@ html{-webkit-tap-highlight-color:transparent;}
   font-family:var(--mono);font-size:11.5px;line-height:1.5;color:var(--muted);
   white-space:pre-wrap;overflow-wrap:anywhere;
 }
+
+/* ---------------- settings ---------------- */
+/* The Settings window borrows the System window's frame the way the Apps window
+   does -- .sys, its bar, its scroll -- and fills it with rows instead of a
+   grid. A row is a label wrapping its control, so the name is part of what you
+   can click; the two rows whose control is not one element (the swatches, and
+   the buttons that open an app's own dialog) are a div and say so. */
+.set-head{
+  margin:6px 0 -4px;font-size:.68rem;text-transform:uppercase;letter-spacing:.07em;
+  color:var(--muted);font-weight:600;flex:0 0 auto;
+}
+.set-head:first-child{margin-top:0;}
+.set-row{
+  display:flex;align-items:center;justify-content:space-between;gap:16px;
+  padding:9px 10px;border:1px solid var(--line);border-radius:6px;
+  background:var(--surface);flex:0 0 auto;
+}
+label.set-row{cursor:pointer;}
+/* The control inside the row is what takes focus, so the row is what shows it
+   -- one rule, rather than a ring around a 16px checkbox at the far end. */
+.set-row:focus-within{border-color:var(--accent);}
+.set-text{display:flex;flex-direction:column;gap:3px;min-width:0;}
+.set-name{font-size:.83rem;}
+.set-sub{font-size:.72rem;color:var(--muted);line-height:1.45;max-width:46ch;}
+.set-control{display:flex;align-items:center;gap:6px;flex:0 0 auto;}
+.set-input{
+  background:var(--bg-2);color:var(--text);border:1px solid var(--line);border-radius:5px;
+  padding:5px 8px;font:inherit;font-size:.78rem;flex:0 0 auto;
+}
+.set-input:focus{outline:none;border-color:var(--accent);}
+/* The checkbox is the browser's, coloured. Drawing our own would be a switch
+   that has to explain which end is on; this one is already understood. */
+.set-check{width:16px;height:16px;accent-color:var(--accent);flex:0 0 auto;cursor:pointer;}
+.swatches{display:flex;align-items:center;gap:6px;flex:0 0 auto;}
+.swatch{
+  width:22px;height:22px;border-radius:50%;border:2px solid transparent;
+  box-shadow:0 0 0 1px rgba(0,0,0,.45) inset;padding:0;
+}
+.swatch[aria-pressed="true"]{border-color:var(--text);}
+.swatch:focus-visible{outline:2px solid var(--accent);outline-offset:2px;}
 
 /* ---------------- apps ---------------- */
 /* The Apps window reuses the System window's frame -- .sys and its bar and its

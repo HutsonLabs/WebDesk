@@ -100,6 +100,15 @@ Title bar hidden = <svg xmlns="http://www.w3.org/2000/svg" width="640" height="6
 	<path fill="currentColor" d="M528 320c0-114.9-93.1-208-208-208s-208 93.1-208 208s93.1 208 208 208s208-93.1 208-208m-464 0C64 178.6 178.6 64 320 64s256 114.6 256 256s-114.6 256-256 256S64 461.4 64 320" />
 </svg>
 
+Settings = <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+	<path d="M0 0h24v24H0z" fill="none" />
+	<g fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="1.5">
+		<path d="M3 8h6.5m5 0H21M3 16h9.5m5 0H21" />
+		<circle cx="12" cy="8" r="2.5" />
+		<circle cx="15" cy="16" r="2.5" />
+	</g>
+</svg>
+
 Window layout = <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
 	<path fill="currentColor" d="M15.346 8.654v2.285a1.25 1.25 0 0 0 2.5 0V8.18c0-.117 0-.27-.01-.405a1.8 1.8 0 0 0-.18-.665a1.75 1.75 0 0 0-.765-.764a1.8 1.8 0 0 0-.665-.18a5 5 0 0 0-.405-.011h-2.76a1.25 1.25 0 1 0 0 2.5zM7.404 11.81c.69 0 1.25.56 1.25 1.25v2.285h2.285a1.25 1.25 0 0 1 0 2.5H8.18c-.117 0-.27 0-.405-.01a1.8 1.8 0 0 1-.665-.18a1.75 1.75 0 0 1-.764-.765a1.8 1.8 0 0 1-.18-.665c-.011-.136-.011-.288-.011-.405v-2.76c0-.69.56-1.25 1.25-1.25" />
 </svg>
