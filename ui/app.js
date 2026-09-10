@@ -2272,29 +2272,113 @@ function openTerminal() {
       term.open(host);
       setTimeout(() => fit.fit(), 0);
 
-      const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-      const ws = new WebSocket(`${proto}://${location.host}/ws/term`);
-      ws.binaryType = 'arraybuffer';
       const enc = new TextEncoder();
+      const say = (text, sgr) => term.write(`\r\n\x1b[${sgr}m${text}\x1b[0m\r\n`);
+
+      let ws = null;      // the current socket, or null between attempts
+      let gone = false;   // the window has closed; stop everything
+      let ended = false;  // the shell exited, so this terminal stays ended
+      let ever = false;   // some socket has been open before now
+      let tries = 0;      // consecutive failed attempts, for the backoff
+      let timer = null;
 
       const sendSize = () => {
-        if (ws.readyState === 1) {
+        if (ws && ws.readyState === 1) {
           ws.send(JSON.stringify({ t: 'resize', cols: term.cols, rows: term.rows }));
         }
       };
 
-      ws.onopen = () => { fit.fit(); sendSize(); term.focus(); };
-      ws.onmessage = (ev) => {
-        term.write(typeof ev.data === 'string' ? ev.data : new Uint8Array(ev.data));
-      };
-      ws.onclose = () => term.write('\r\n\x1b[2m[session ended]\x1b[0m\r\n');
-      ws.onerror = () => term.write('\r\n\x1b[31m[connection error]\x1b[0m\r\n');
+      /* A socket that closes without the server naming an exit status was the
+         connection, not the session. That distinction is the whole point: a
+         blink is worth waiting out, a finished shell is not. */
+      const connect = () => {
+        if (gone || ended) return;
+        const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+        // The size travels in the URL. The PTY is opened before any resize
+        // message could arrive, and a shell that starts at 24x80 and jumps has
+        // already drawn its first prompt at the wrong width.
+        const url = `${proto}://${location.host}/ws/term?cols=${term.cols}&rows=${term.rows}`;
+        const sock = new WebSocket(url);
+        ws = sock;
+        sock.binaryType = 'arraybuffer';
+        let opened = false;
 
-      term.onData((d) => { if (ws.readyState === 1) ws.send(enc.encode(d)); });
+        sock.onopen = () => {
+          opened = true;
+          tries = 0;
+          fit.fit();
+          sendSize();
+          term.focus();
+          // Said plainly, because it is not the shell that was there before.
+          // Nothing typed while the socket was down was kept, either: replaying
+          // a half-finished command into a fresh shell is not a kindness.
+          if (ever) say('[reconnected — this is a new shell]', '32');
+          ever = true;
+        };
+        sock.onmessage = (ev) => {
+          term.write(typeof ev.data === 'string' ? ev.data : new Uint8Array(ev.data));
+        };
+        sock.onclose = (ev) => {
+          if (sock !== ws || gone) return;
+          ws = null;
+          // 1000 is reserved by the server for a shell that ended on its own.
+          // The exit status rides in the reason, but a proxy is allowed to drop
+          // that string, so the code alone has to be enough to decide -- every
+          // other close the server sends is 1001.
+          const reason = String(ev.reason || '');
+          if (reason.startsWith('exit:') || (ev.wasClean && ev.code === 1000)) {
+            ended = true;
+            const code = reason.startsWith('exit:') ? reason.slice(5) : '?';
+            say(code === '0' || code === '?'
+              ? '[session ended]'
+              : `[session ended — exit ${code}]`, '2');
+            return;
+          }
+          retry(opened);
+        };
+        // onclose always follows onerror, and one message about it is enough.
+        sock.onerror = () => {};
+      };
+
+      /* 0.5s, 1, 2, 4, then 8 forever: a blink is recovered from before it is
+         noticed, and a server that is restarting is not hammered while it does. */
+      const retry = async (hadOpened) => {
+        if (gone || ended) return;
+        // A socket that never opened at all may mean the sign-in is gone rather
+        // than the network. Ask once, rather than reconnecting into nothing for
+        // the rest of the afternoon.
+        if (!hadOpened && tries >= 2 && !(await signedIn())) {
+          ended = true;
+          say('[signed out — sign in again to open a terminal]', '31');
+          return;
+        }
+        if (gone || ended) return;
+        if (tries === 0) say('[connection lost — reconnecting]', '33');
+        const wait = Math.min(8000, 500 * 2 ** tries);
+        tries += 1;
+        timer = setTimeout(connect, wait);
+      };
+
+      const signedIn = () =>
+        fetch('/api/me', { credentials: 'same-origin' })
+          .then((r) => r.ok)
+          // A fetch that fails outright is the network being down, which is the
+          // case worth retrying -- not evidence of being signed out.
+          .catch(() => true);
+
+      connect();
+
+      term.onData((d) => { if (ws && ws.readyState === 1) ws.send(enc.encode(d)); });
       term.onResize(sendSize);
 
       entry.onResize = () => { try { fit.fit(); } catch (_) {} };
-      entry.onClose = () => { try { ws.close(); } catch (_) {} term.dispose(); };
+      entry.onClose = () => {
+        gone = true;
+        clearTimeout(timer);
+        try { if (ws) ws.close(); } catch (_) {}
+        ro.disconnect();
+        term.dispose();
+      };
 
       // xterm takes focus from a mouse on its own. A finger gives it none of
       // the events it is watching for, so the window could be tapped all day
